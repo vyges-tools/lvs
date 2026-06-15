@@ -1,0 +1,5 @@
+* inverter schematic — M d g s b (bulk tied to source; v0 ignores bulk in LVS)
+.subckt inverter VDD VSS A Y
+M0 Y A VDD VDD pfet
+M1 Y A VSS VSS nfet
+.ends

@@ -1,0 +1,12 @@
+active: 1/0
+poly:   2/0
+nwell:  3/0
+conn:   1/0, 2/0, 3/0, 5/0, 10/0
+contact: 6/0 1/0 5/0     # diff/poly -> met1
+contact: 6/0 2/0 5/0
+contact: 9/0 3/0 5/0     # nwell tap
+contact: 11/0 5/0 10/0   # via: met1 <-> met2
+label:  8/0
+substrate: VSS
+nfet:   nfet
+pfet:   pfet

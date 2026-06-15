@@ -1,0 +1,7 @@
+* Two-inverter chain — the schematic / reference netlist.
+.subckt inv2 IN OUT VDD VSS
+Mp1 N1  IN  VDD VDD pfet
+Mn1 N1  IN  VSS VSS nfet
+Mp2 OUT N1  VDD VDD pfet
+Mn2 OUT N1  VSS VSS nfet
+.ends

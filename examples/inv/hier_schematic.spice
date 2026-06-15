@@ -1,0 +1,4 @@
+.subckt inv_hier VDD VSS A Y
+M0 Y A VDD VDD pfet
+M1 Y A VSS VSS nfet
+.ends

@@ -1,0 +1,4 @@
+layout_gds: inv_hier.gds
+schematic: hier_schematic.spice
+rules: hier.rules
+top: inv_hier

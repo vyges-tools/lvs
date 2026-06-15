@@ -1,0 +1,3 @@
+layout:    bug.spice
+schematic: schematic.spice
+top:       inv2

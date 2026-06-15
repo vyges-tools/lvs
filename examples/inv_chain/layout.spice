@@ -1,0 +1,8 @@
+* Same chain, "layout-extracted" style: internal net + device names changed,
+* device order shuffled. Should match the schematic.
+.subckt inv2 IN OUT VDD VSS
+Mn_a OUT n5  VSS VSS nfet
+Mp_a OUT n5  VDD VDD pfet
+Mn_b n5  IN  VSS VSS nfet
+Mp_b n5  IN  VDD VDD pfet
+.ends

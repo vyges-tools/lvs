@@ -1,0 +1,4 @@
+layout_gds: inverter.gds
+schematic:  schematic.spice
+rules:      inv.rules
+top:        inverter

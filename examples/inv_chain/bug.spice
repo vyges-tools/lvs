@@ -1,0 +1,6 @@
+* Stage-2 pull-up (pfet) dropped — a real LVS error.
+.subckt inv2 IN OUT VDD VSS
+Mp1 N1  IN  VDD VDD pfet
+Mn1 N1  IN  VSS VSS nfet
+Mn2 OUT N1  VSS VSS nfet
+.ends
