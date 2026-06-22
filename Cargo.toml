@@ -1,6 +1,6 @@
 [package]
 name = "vyges-lvs"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
 description = "Layout-vs-schematic: SPICE netlist comparison with clear divergence diagnostics."
 license = "Apache-2.0"
@@ -12,7 +12,7 @@ repository = "https://github.com/vyges-tools/lvs"
 # vyges-layout foundation (was vendored under src/layout/) — sibling-checkout path
 # dep in dev; release pins a git/version dep.
 [dependencies]
-vyges-layout = { path = "../vyges-tools-layout" }
+vyges-layout = { git = "https://github.com/vyges-tools/layout", tag = "v0.1.0" }
 
 [[bin]]
 name = "vyges-lvs"
