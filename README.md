@@ -67,6 +67,28 @@ comments, and M/Q/R/C/L/D/X devices.
 **Source/drain are matched symmetrically** (a MOSFET's S/D are interchangeable); **bulk is
 matched** (gate and bulk positional).
 
+## Domain coverage — digital *and* analog / mixed-signal
+
+The compare is **device-kind-agnostic**: it matches the netlist *graph*, seeded only by each
+device's kind/model, over the generic SPICE primitives `M/Q/R/C/L/D/X`. Nothing in the path
+assumes standard cells, Liberty, or a clocked digital netlist — so `vyges-lvs` runs on
+**analog and mixed-signal** blocks exactly as it does on digital ones (the only kind-specific
+rule is electrically-correct MOSFET S/D symmetry, which analog needs too).
+
+- Digital: `examples/inv_chain/` — a standard-cell inverter chain.
+- Analog: `examples/bandgap/` — a bandgap reference exercising bipolar transistors (`Q`),
+  resistors (`R`) and a capacitor (`C`) alongside a PMOS mirror (`M`). `match.lvs` → MATCH on a
+  renamed/reordered layout; `mismatch.lvs` → MISMATCH on a mis-wired sense resistor (a pure
+  connectivity divergence — device counts still balance).
+
+```sh
+vyges-lvs run examples/bandgap/match.lvs       # -> MATCH
+vyges-lvs run examples/bandgap/mismatch.lvs    # -> MISMATCH (mis-wired R, named)
+```
+
+Mixed-signal scope here is **physical connectivity (LVS)**; analog *functional/timing* sign-off
+is out of scope (it leans on external SPICE/behavioral tools).
+
 ## Native extraction (Phase 2) — `vyges-layout`
 
 `vyges-lvs` can extract the layout netlist **from a GDS** itself, using the vendored

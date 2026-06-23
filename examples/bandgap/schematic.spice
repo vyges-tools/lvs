@@ -1,0 +1,20 @@
+* Bandgap reference core — the schematic / reference netlist.
+* Exercises genuinely-analog device kinds that never appear in a digital
+* standard-cell LVS: bipolar transistors (Q), resistors (R), a capacitor (C),
+* alongside a PMOS current mirror (M).
+.subckt bandgap VDD VSS VREF
+* PTAT core: two BJTs run at different current densities
+Q1  VX  VB  VSS  npn
+Q2  VY  VB  VSS  npn
+* delta-Vbe sense resistor between the two branches
+R1  VY  VZ  res
+* ratio / load resistors into the reference node
+R2  VX  VREF res
+R3  VZ  VREF res
+* PMOS current mirror feeding both branches (Mp3 diode-connected)
+Mp1 VX  VG  VDD VDD pfet
+Mp2 VY  VG  VDD VDD pfet
+Mp3 VG  VG  VDD VDD pfet
+* reference-node filter capacitor
+C1  VREF VSS cap
+.ends

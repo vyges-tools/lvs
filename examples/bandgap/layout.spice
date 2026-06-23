@@ -1,0 +1,14 @@
+* Same bandgap core, "layout-extracted" style: internal nets renamed
+* (VX/VY/VZ/VB/VG -> a1/a2/a3/b/g), instances renamed, device order shuffled.
+* Per-device terminal order is preserved, so this MUST match the schematic.
+.subckt bandgap VDD VSS VREF
+C_f  VREF VSS cap
+Mpa  a1  g   VDD VDD pfet
+Mpc  g   g   VDD VDD pfet
+R_x  a1  VREF res
+Q_a  a1  b   VSS npn
+R_d  a2  a3  res
+Mpb  a2  g   VDD VDD pfet
+Q_b  a2  b   VSS npn
+R_z  a3  VREF res
+.ends
