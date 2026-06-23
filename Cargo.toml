@@ -12,7 +12,7 @@ repository = "https://github.com/vyges-tools/lvs"
 # vyges-layout foundation (was vendored under src/layout/) — sibling-checkout path
 # dep in dev; release pins a git/version dep.
 [dependencies]
-vyges-layout = { git = "https://github.com/vyges-tools/layout", tag = "v0.1.0" }
+vyges-layout = { git = "https://github.com/vyges-tools/layout", branch = "main" }
 
 [[bin]]
 name = "vyges-lvs"
