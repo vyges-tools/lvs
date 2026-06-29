@@ -172,11 +172,14 @@ first so the fault is named. A balanced match is **verified by an explicit bijec
 1-WL false positive **refuted**); the verdict carries a `verified` flag in text + JSON.
 **Device parameters** (MOSFET W/L, passive value) are checked on the matched bijection to a
 1% tolerance, so a wrong-width transistor is reported as a named parameter mismatch.
-**Native GDS extraction** (Phase 2, via the vendored `vyges-layout` kernel); a
-`--fail-on-mismatch` CI gate. Pure std, unit + example tested offline, no subprocess.
+**Parallel devices are combined** before matching (fingered transistors sum their width,
+parallel R/L combine, parallel C sums), so an N-finger layout matches a single wide
+schematic device. **Native GDS extraction** (Phase 2, via the vendored `vyges-layout`
+kernel); a `--fail-on-mismatch` CI gate. Pure std, unit + example tested offline, no
+subprocess.
 
-Depth still reserved on the comparator: **series/parallel device combining** (merging
-fingered or stacked devices before the match), and W/L for **GDS-extracted** devices (their
+Depth still reserved on the comparator: **series device combining** (merging stacked
+devices that share a private internal node), and W/L for **GDS-extracted** devices (their
 parameters would come from channel geometry; today the property audit simply skips
 parameters absent on one side).
 
@@ -185,3 +188,33 @@ parameters absent on one side).
 and Netgen agree 3/3 — MATCH on a renamed/reordered netlist, MISMATCH on a dropped cell
 and on a swapped net — with `vyges-lvs` naming the unmatched device/net classes where
 Netgen prints a terse "do not match".
+
+## For researchers — open problems
+
+`vyges-lvs` is a compact, std-only, fully open comparator with a real correlation harness
+against Netgen — a good base for student research in physical verification. Each item is a
+self-contained, publishable direction; the SPICE-in / verdict-out boundary lets a new
+method drop in and be measured against the existing baseline.
+
+1. **Series device combining.** Merge stacked devices that share a private internal node
+   (series resistors/capacitors, stacked transistors) before the match — the companion to
+   the parallel combining already shipped. *Open question:* a sound, general reduction that
+   preserves correctness on real analog topologies.
+2. **Symmetric-graph resolution at scale.** The match is 1-WL + bounded backtracking; on
+   highly symmetric structures the search is budgeted and reports *unresolved*. *Publishable
+   as:* canonical-form / individualization-refinement methods (à la graph-isomorphism
+   research) tuned for circuit graphs, with scaling data.
+3. **Parameters from layout geometry.** Extract MOSFET W/L (and passive values) from the
+   GDS during native extraction, enabling full property LVS straight from layout rather than
+   only from an annotated schematic netlist.
+4. **Tolerance & corner-aware property checks.** Per-PDK and statistical parameter
+   tolerances, binning, and corner-aware comparison — what counts as "the same device" at an
+   advanced node.
+5. **Hierarchical LVS.** Compare at subckt boundaries without full flattening, for
+   block-level scale — and study the speed/accuracy trade-off vs. the flat compare.
+6. **Diagnostics quality.** Better localization and ranking of the *root-cause* device/net
+   in a large mismatch (beyond smallest-class-first) — a usability problem with measurable
+   metrics.
+
+Contributions welcome — open an issue or PR. The `correlation/` harness makes
+before/after numbers easy to report in a paper.

@@ -19,7 +19,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::spice::Netlist;
+use crate::spice::{Device, Netlist};
 
 #[derive(Debug, Clone)]
 pub struct Unbalanced {
@@ -203,6 +203,11 @@ fn intern(reg: &mut BTreeMap<String, u64>, key: String) -> u64 {
 /// Compare two netlists. `a` is typically the layout-extracted netlist, `b` the
 /// schematic/reference.
 pub fn compare(a: &Netlist, b: &Netlist) -> LvsResult {
+    // Merge electrically-parallel devices on both sides first, so a transistor laid
+    // out as N fingers matches a single wide schematic device (and vice versa).
+    let (ca, cb) = (combine_parallel(a), combine_parallel(b));
+    let (a, b) = (&ca, &cb);
+
     let mut r = LvsResult {
         a_devices: a.devices.len(),
         b_devices: b.devices.len(),
@@ -638,6 +643,103 @@ fn verify_iso(
     }
 }
 
+/// Canonical signature for parallel grouping: two devices with the same signature
+/// are electrically parallel (identical kind, model, and terminal connectivity —
+/// honouring MOSFET source/drain and passive two-terminal symmetry). MOSFET `l` is
+/// folded in so only same-length fingers merge; capacitor/resistor/inductor are
+/// symmetric, diodes/BJTs keep terminal order.
+fn parallel_sig(d: &Device) -> (char, String, Vec<String>, i64) {
+    let n = &d.nodes;
+    let terms: Vec<String> = match d.kind {
+        'M' if n.len() >= 4 => {
+            let (mut s, mut dr) = (n[0].clone(), n[2].clone());
+            if s > dr {
+                std::mem::swap(&mut s, &mut dr);
+            }
+            vec![s, n[1].clone(), dr, n[3].clone()] // {s,d} unordered; gate, bulk fixed
+        }
+        'R' | 'C' | 'L' if n.len() == 2 => {
+            let mut t = vec![n[0].clone(), n[1].clone()];
+            t.sort(); // symmetric two-terminal
+            t
+        }
+        _ => n.clone(), // diode/BJT/other: polarity / order preserved
+    };
+    // fold MOSFET length into the key (nm) so different-L devices never merge
+    let lkey = (d.params.get("l").copied().unwrap_or(0.0) * 1e9).round() as i64;
+    (d.kind, d.model.clone(), terms, lkey)
+}
+
+/// Combine the size parameter of `group` (all mutually parallel) into one device.
+/// Width adds for MOSFETs; capacitance adds; resistance/inductance combine in
+/// parallel. A missing value on any member drops that combined param (the audit
+/// then simply skips it) rather than inventing one.
+fn combine_size(kind: char, group: &[&Device]) -> BTreeMap<String, f64> {
+    let mut p = group[0].params.clone();
+    let all = |key: &str| group.iter().all(|d| d.params.contains_key(key));
+    match kind {
+        'M' if all("w") => {
+            // effective width = Σ w·nf·m, collapsed to a single finger
+            let w: f64 = group
+                .iter()
+                .map(|d| {
+                    let g = |k: &str| d.params.get(k).copied().unwrap_or(1.0);
+                    d.params["w"] * g("nf") * g("m")
+                })
+                .sum();
+            p.insert("w".into(), w);
+            p.remove("nf");
+            p.remove("m");
+        }
+        'C' if all("value") => {
+            p.insert("value".into(), group.iter().map(|d| d.params["value"]).sum());
+        }
+        'R' | 'L' if all("value") && group.iter().all(|d| d.params["value"] > 0.0) => {
+            let g: f64 = group.iter().map(|d| 1.0 / d.params["value"]).sum();
+            p.insert("value".into(), 1.0 / g);
+        }
+        _ => {}
+    }
+    p
+}
+
+/// Merge electrically-parallel devices into one each (a netlist normalization run
+/// before comparison). Order is preserved by first occurrence; singletons pass
+/// through unchanged. `X` instances are never merged.
+fn combine_parallel(nl: &Netlist) -> Netlist {
+    let mut order: Vec<(char, String, Vec<String>, i64)> = Vec::new();
+    let mut groups: BTreeMap<(char, String, Vec<String>, i64), Vec<&Device>> = BTreeMap::new();
+    for d in &nl.devices {
+        // X subckt instances are never merged — key each by its (unique) name
+        let key = if d.kind == 'X' {
+            ('X', d.name.clone(), d.nodes.clone(), 0)
+        } else {
+            parallel_sig(d)
+        };
+        if !groups.contains_key(&key) {
+            order.push(key.clone());
+        }
+        groups.entry(key).or_default().push(d);
+    }
+    let mut devices: Vec<Device> = Vec::with_capacity(order.len());
+    for key in &order {
+        let group = &groups[key];
+        let first = group[0];
+        if group.len() == 1 {
+            devices.push(first.clone());
+        } else {
+            devices.push(Device {
+                kind: first.kind,
+                name: format!("{}(×{})", first.name, group.len()),
+                nodes: first.nodes.clone(),
+                model: first.model.clone(),
+                params: combine_size(first.kind, group),
+            });
+        }
+    }
+    Netlist { name: nl.name.clone(), ports: nl.ports.clone(), devices }
+}
+
 fn unbalanced(what: &'static str, colour: &[u64], side: &[u8], label: &[String]) -> Vec<Unbalanced> {
     let mut by: BTreeMap<u64, (Vec<String>, Vec<String>)> = BTreeMap::new();
     for i in 0..colour.len() {
@@ -763,6 +865,41 @@ mod tests {
         // anchoring must not create false mismatches on a clean design
         let r = compare(&bank(200, false), &bank(200, false));
         assert!(r.matched, "identical supply-heavy banks must MATCH: {} classes", r.unbalanced.len());
+    }
+
+    #[test]
+    fn fingered_mosfet_matches_single_wide() {
+        // layout draws the device as 4 parallel W=0.5 fingers; schematic is one
+        // W=2 device — combining the fingers makes them match (and the widths agree).
+        let lay = ".subckt c A Y VDD VSS\n\
+            Mp0 Y A VDD VDD pfet w=0.5u l=0.15u\nMp1 Y A VDD VDD pfet w=0.5u l=0.15u\n\
+            Mp2 Y A VDD VDD pfet w=0.5u l=0.15u\nMp3 Y A VDD VDD pfet w=0.5u l=0.15u\n\
+            Mn Y A VSS VSS nfet w=1u l=0.15u\n.ends\n";
+        let sch = ".subckt c A Y VDD VSS\nMp Y A VDD VDD pfet w=2u l=0.15u\nMn Y A VSS VSS nfet w=1u l=0.15u\n.ends\n";
+        let r = compare(&nl(lay), &nl(sch));
+        assert!(r.matched && r.verified, "4 fingers should combine and MATCH a W=2 device: {r:?}");
+        assert_eq!((r.a_devices, r.b_devices), (2, 2), "fingers combined to 2 devices");
+    }
+
+    #[test]
+    fn fingered_width_total_mismatch_is_caught() {
+        // only 3 fingers in the layout -> combined W=1.5 vs schematic W=2 -> error
+        let lay = ".subckt c A Y VDD VSS\n\
+            Mp0 Y A VDD VDD pfet w=0.5u l=0.15u\nMp1 Y A VDD VDD pfet w=0.5u l=0.15u\n\
+            Mp2 Y A VDD VDD pfet w=0.5u l=0.15u\nMn Y A VSS VSS nfet w=1u l=0.15u\n.ends\n";
+        let sch = ".subckt c A Y VDD VSS\nMp Y A VDD VDD pfet w=2u l=0.15u\nMn Y A VSS VSS nfet w=1u l=0.15u\n.ends\n";
+        let r = compare(&nl(lay), &nl(sch));
+        assert!(!r.matched, "short by one finger -> total width differs -> MISMATCH");
+        assert!(r.property_diffs.iter().any(|d| d.param == "w"));
+    }
+
+    #[test]
+    fn parallel_resistors_combine() {
+        // two parallel 2k resistors == one 1k
+        let lay = "R0 a b 2k\nR1 a b 2k\n";
+        let sch = "R0 a b 1k\n";
+        let r = compare(&nl(lay), &nl(sch));
+        assert!(r.matched, "2k||2k should match 1k: {r:?}");
     }
 
     #[test]
