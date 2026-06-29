@@ -53,3 +53,33 @@ fn wrong_schematic_mismatches() {
     .unwrap();
     assert!(!compare(&lay, &bad).matched, "a pfet->nfet error must MISMATCH");
 }
+
+#[test]
+fn extracts_channel_width_and_length() {
+    // channel = poly(40 dbu wide) ∩ active(100 dbu): S/D flank it in X, so L is the
+    // 40-dbu poly extent and W the 100-dbu active extent; db_unit 1e-9 -> L=40n, W=100n.
+    let lay = extracted();
+    for d in &lay.devices {
+        let w = d.params.get("w").copied().expect("W extracted from geometry");
+        let l = d.params.get("l").copied().expect("L extracted from geometry");
+        assert!((l - 40e-9).abs() < 1e-12, "{} L = {l}", d.model);
+        assert!((w - 100e-9).abs() < 1e-12, "{} W = {w}", d.model);
+    }
+}
+
+#[test]
+fn wrong_drawn_width_mismatches() {
+    // the layout draws both devices at W=100n; a schematic that expects the nfet at
+    // 50n is a real LVS error caught on the extracted geometry.
+    let lay = extracted();
+    let sch = Netlist::parse(
+        ".subckt inverter VDD VSS A Y\n\
+         M0 Y A VDD VDD pfet w=100n l=40n\n\
+         M1 Y A VSS VSS nfet w=50n l=40n\n.ends\n",
+        Some("inverter"),
+    )
+    .unwrap();
+    let r = compare(&lay, &sch);
+    assert!(!r.matched, "a layout drawn at the wrong width must MISMATCH");
+    assert!(r.property_diffs.iter().any(|d| d.param == "w"), "{:?}", r.property_diffs);
+}

@@ -156,6 +156,34 @@ fn union_bbox(rects: &[Rect]) -> Rect {
     }
     r
 }
+
+/// Channel width and length (in **metres**) from the channel bbox `cb` and the
+/// diffusion regions `sd` flanking it (`(net, bbox)`). Current flows along the axis
+/// that separates source from drain — that channel extent is the gate **length** L;
+/// the perpendicular extent is the gate **width** W. `db_unit` is metres per GDS DB
+/// unit. Returns `None` unless exactly two distinct diffusion nets flank the channel
+/// (a MOSCAP's single tied diffusion has no defined W/L).
+fn channel_wl(cb: &Rect, sd: &[(usize, Rect)], db_unit: f64) -> Option<(f64, f64)> {
+    let mut by_net: BTreeMap<usize, Rect> = BTreeMap::new();
+    for (net, r) in sd {
+        by_net.entry(*net).and_modify(|u| *u = union_bbox(&[*u, *r])).or_insert(*r);
+    }
+    if by_net.len() != 2 {
+        return None;
+    }
+    let c: Vec<(f64, f64)> = by_net
+        .values()
+        .map(|r| ((r.x0 + r.x1) as f64 / 2.0, (r.y0 + r.y1) as f64 / 2.0))
+        .collect();
+    let dx_sep = (c[0].0 - c[1].0).abs();
+    let dy_sep = (c[0].1 - c[1].1).abs();
+    let (l_dbu, w_dbu) = if dx_sep >= dy_sep {
+        ((cb.x1 - cb.x0) as f64, (cb.y1 - cb.y0) as f64) // S/D along X -> L is the X extent
+    } else {
+        ((cb.y1 - cb.y0) as f64, (cb.x1 - cb.x0) as f64)
+    };
+    (l_dbu > 0.0 && w_dbu > 0.0).then_some((w_dbu * db_unit, l_dbu * db_unit))
+}
 /// Is `poly` a single axis-aligned rectangle (the overwhelmingly common shape)?
 fn is_rect(poly: &[(i32, i32)]) -> bool {
     let p = if poly.len() >= 2 && poly.first() == poly.last() { &poly[..poly.len() - 1] } else { poly };
@@ -443,12 +471,15 @@ pub fn extract(lib: &Library, top: Option<&str>, rules: &Rules) -> Result<Netlis
             .copied()
             .find(|&pi| prims[pi].role == Role::Poly && rects_touch(&prims[pi].rects, ch))
             .map(|pi| net_id[pi]);
-        let mut sd: Vec<usize> = cand
+        // diffusion regions flanking the channel: their nets (for source/drain) and
+        // bboxes (for the source→drain axis that sets which channel extent is L vs W)
+        let sd_regions: Vec<(usize, Rect)> = cand
             .iter()
             .copied()
             .filter(|&pi| prims[pi].role == Role::Active && rects_touch(&prims[pi].rects, ch))
-            .map(|pi| net_id[pi])
+            .map(|pi| (net_id[pi], union_bbox(&prims[pi].rects)))
             .collect();
+        let mut sd: Vec<usize> = sd_regions.iter().map(|(n, _)| *n).collect();
         sd.sort();
         sd.dedup();
         let is_p = nwell.iter().any(|w| overlap(&bbox_of(w), &cb));
@@ -491,15 +522,18 @@ pub fn extract(lib: &Library, top: Option<&str>, rules: &Rules) -> Result<Netlis
                 break;
             }
         }
+        // gate W/L from the channel geometry (skipped for a MOSCAP's tied diffusion),
+        // so the comparator's property audit can check drawn dimensions vs schematic
+        let params = match (s != d).then(|| channel_wl(&cb, &sd_regions, lib.db_unit)).flatten() {
+            Some((w, l)) => BTreeMap::from([("w".to_string(), w), ("l".to_string(), l)]),
+            None => BTreeMap::new(),
+        };
         devices.push(Device {
             kind: 'M',
             name: format!("M{i}"),
             nodes: vec![net_name(s), net_name(g), net_name(d), bulk],
             model,
-            // device dimensions from layout geometry are a depth item; with no
-            // params here the comparator's property audit simply skips W/L for
-            // GDS-extracted devices (compares only params present on both sides).
-            params: std::collections::BTreeMap::new(),
+            params,
         });
     }
     if dbg && skipped > 0 {

@@ -135,6 +135,11 @@ vyges-lvs extract block.gds --rules block.rules --top block   # GDS -> SPICE
 OpenLane, 229 cell instances) it flattens + extracts ~600 transistors end-to-end — see
 [`correlation/`](correlation/).
 
+It also recovers each transistor's **gate W/L from the channel geometry** — the channel
+extent along the source→drain axis is the length, the perpendicular extent the width — so
+the comparator's property audit checks drawn dimensions straight from the layout (a MOSCAP's
+tied diffusion has no defined W/L and is skipped).
+
 The extractor handles **hierarchy** (SREF/AREF flattened first), **metal-to-metal vias**
 (just more `contact:` rules), and **enclosure-gated** contacts (a contact joins two layers
 only where it is *enclosed* by a shape on each). Same-layer connectivity is **true geometric
@@ -180,9 +185,9 @@ chain through private internal nodes matches one lumped device. **Native GDS ext
 (Phase 2, via the vendored `vyges-layout` kernel); a `--fail-on-mismatch` CI gate. Pure std,
 unit + example tested offline, no subprocess.
 
-Depth still reserved on the comparator: W/L for **GDS-extracted** devices (their parameters
-would come from channel geometry; today the property audit simply skips parameters absent on
-one side), and reductions beyond simple series/parallel (bridge / delta-Y networks).
+Depth still reserved on the comparator: passive **values from layout geometry** (R/C drawn
+dimensions, the way MOSFET W/L already is), and reductions beyond simple series/parallel
+(bridge / delta-Y networks).
 
 **Verdict-parity correlated against Netgen on a real sky130 block** (see
 [`correlation/`](correlation/)): on a synthesized sky130 counter (23 cells), `vyges-lvs`
@@ -205,9 +210,10 @@ method drop in and be measured against the existing baseline.
    highly symmetric structures the search is budgeted and reports *unresolved*. *Publishable
    as:* canonical-form / individualization-refinement methods (à la graph-isomorphism
    research) tuned for circuit graphs, with scaling data.
-3. **Parameters from layout geometry.** Extract MOSFET W/L (and passive values) from the
-   GDS during native extraction, enabling full property LVS straight from layout rather than
-   only from an annotated schematic netlist.
+3. **Passive values from layout geometry.** MOSFET W/L are now extracted from the channel
+   geometry during native extraction; extend this to **passive values** (resistor sheet
+   count, capacitor area) and to non-rectangular / multi-finger channels, for full property
+   LVS straight from layout.
 4. **Tolerance & corner-aware property checks.** Per-PDK and statistical parameter
    tolerances, binning, and corner-aware comparison — what counts as "the same device" at an
    advanced node.
