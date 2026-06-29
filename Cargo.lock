@@ -9,7 +9,7 @@ source = "git+https://github.com/vyges-tools/layout?branch=main#43c7d3f275a30241
 
 [[package]]
 name = "vyges-lvs"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "vyges-layout",
 ]
