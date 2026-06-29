@@ -202,26 +202,31 @@ against Netgen — a good base for student research in physical verification. Ea
 self-contained, publishable direction; the SPICE-in / verdict-out boundary lets a new
 method drop in and be measured against the existing baseline.
 
+Several already have a working baseline you can build straight on top of — each item names
+the **code anchor** (the file / function that is the foundation and the natural drop-in point).
+
 1. **General network reduction.** Parallel and simple series chains are merged; extend to
    arbitrary **series-parallel and bridge (delta-Y)** passive networks, and to recognized
-   transistor-stack patterns. *Open question:* a sound, general reduction that preserves
-   correctness on real analog topologies.
+   transistor-stack patterns. *Start from:* `combine_parallel` / `combine_series` in
+   `compare.rs` (run to a fixed point by `normalize`) — add the new reduction passes there.
 2. **Symmetric-graph resolution at scale.** The match is 1-WL + bounded backtracking; on
-   highly symmetric structures the search is budgeted and reports *unresolved*. *Publishable
-   as:* canonical-form / individualization-refinement methods (à la graph-isomorphism
-   research) tuned for circuit graphs, with scaling data.
+   highly symmetric structures the search is budgeted and reports *unresolved*. *Start from:*
+   the iterative backtracker `verify_iso` in `compare.rs` — add canonical-form /
+   individualization-refinement (à la graph-isomorphism research), with scaling data.
 3. **Passive values from layout geometry.** MOSFET W/L are now extracted from the channel
-   geometry during native extraction; extend this to **passive values** (resistor sheet
-   count, capacitor area) and to non-rectangular / multi-finger channels, for full property
-   LVS straight from layout.
-4. **Tolerance & corner-aware property checks.** Per-PDK and statistical parameter
-   tolerances, binning, and corner-aware comparison — what counts as "the same device" at an
-   advanced node.
-5. **Hierarchical LVS.** Compare at subckt boundaries without full flattening, for
-   block-level scale — and study the speed/accuracy trade-off vs. the flat compare.
-6. **Diagnostics quality.** Better localization and ranking of the *root-cause* device/net
-   in a large mismatch (beyond smallest-class-first) — a usability problem with measurable
-   metrics.
+   geometry during native extraction; extend this to **passive values** (resistor sheet count,
+   capacitor area) and to non-rectangular / multi-finger channels. *Start from:* `channel_wl`
+   in `extract.rs` — add passive-device recognition + value extraction the same way.
+4. **Tolerance & corner-aware property checks.** Per-PDK and statistical parameter tolerances,
+   binning, and corner-aware comparison — what counts as "the same device" at an advanced node.
+   *Start from:* `PROP_TOL` + `props_compatible` / `audit_props` in `compare.rs` — replace the
+   flat 1 % with a per-PDK / statistical model.
+5. **Hierarchical LVS.** Compare at subckt boundaries without full flattening, for block-level
+   scale — and study the speed/accuracy trade-off vs. the flat compare. *Start from:* the
+   `flatten` pass in `spice.rs` — match at `.subckt` boundaries instead of fully expanding.
+6. **Diagnostics quality.** Better localization and ranking of the *root-cause* device/net in a
+   large mismatch (beyond smallest-class-first) — a usability problem with measurable metrics.
+   *Start from:* the class sort + `unbalanced` report in `compare.rs`.
 
 **Working on one of these — or want to?** We're actively pursuing several of these areas
 ourselves, but the open frontier is bigger than any one team, and we'd rather build it in
