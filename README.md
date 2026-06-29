@@ -100,8 +100,9 @@ rule is electrically-correct MOSFET S/D symmetry, which analog needs too).
 - Digital: `examples/inv_chain/` — a standard-cell inverter chain.
 - Analog: `examples/bandgap/` — a bandgap reference exercising bipolar transistors (`Q`),
   resistors (`R`) and a capacitor (`C`) alongside a PMOS mirror (`M`). `match.lvs` → MATCH on a
-  renamed/reordered layout; `mismatch.lvs` → MISMATCH on a mis-wired sense resistor (a pure
-  connectivity divergence — device counts still balance).
+  renamed/reordered layout; `mismatch.lvs` → MISMATCH on a mis-wired sense resistor (the
+  miswire breaks a private series node, so the schematic's two series resistors combine
+  while the bug's do not — caught as a resistor-count divergence).
 
 ```sh
 vyges-lvs run examples/bandgap/match.lvs       # -> MATCH
@@ -172,16 +173,16 @@ first so the fault is named. A balanced match is **verified by an explicit bijec
 1-WL false positive **refuted**); the verdict carries a `verified` flag in text + JSON.
 **Device parameters** (MOSFET W/L, passive value) are checked on the matched bijection to a
 1% tolerance, so a wrong-width transistor is reported as a named parameter mismatch.
-**Parallel devices are combined** before matching (fingered transistors sum their width,
-parallel R/L combine, parallel C sums), so an N-finger layout matches a single wide
-schematic device. **Native GDS extraction** (Phase 2, via the vendored `vyges-layout`
-kernel); a `--fail-on-mismatch` CI gate. Pure std, unit + example tested offline, no
-subprocess.
+**Parallel and series devices are combined** before matching (to a fixed point): fingered
+transistors sum their width; parallel R/L and series C combine reciprocally; series R/L and
+parallel C add — so an N-finger layout matches a single wide schematic device, and a passive
+chain through private internal nodes matches one lumped device. **Native GDS extraction**
+(Phase 2, via the vendored `vyges-layout` kernel); a `--fail-on-mismatch` CI gate. Pure std,
+unit + example tested offline, no subprocess.
 
-Depth still reserved on the comparator: **series device combining** (merging stacked
-devices that share a private internal node), and W/L for **GDS-extracted** devices (their
-parameters would come from channel geometry; today the property audit simply skips
-parameters absent on one side).
+Depth still reserved on the comparator: W/L for **GDS-extracted** devices (their parameters
+would come from channel geometry; today the property audit simply skips parameters absent on
+one side), and reductions beyond simple series/parallel (bridge / delta-Y networks).
 
 **Verdict-parity correlated against Netgen on a real sky130 block** (see
 [`correlation/`](correlation/)): on a synthesized sky130 counter (23 cells), `vyges-lvs`
@@ -196,10 +197,10 @@ against Netgen — a good base for student research in physical verification. Ea
 self-contained, publishable direction; the SPICE-in / verdict-out boundary lets a new
 method drop in and be measured against the existing baseline.
 
-1. **Series device combining.** Merge stacked devices that share a private internal node
-   (series resistors/capacitors, stacked transistors) before the match — the companion to
-   the parallel combining already shipped. *Open question:* a sound, general reduction that
-   preserves correctness on real analog topologies.
+1. **General network reduction.** Parallel and simple series chains are merged; extend to
+   arbitrary **series-parallel and bridge (delta-Y)** passive networks, and to recognized
+   transistor-stack patterns. *Open question:* a sound, general reduction that preserves
+   correctness on real analog topologies.
 2. **Symmetric-graph resolution at scale.** The match is 1-WL + bounded backtracking; on
    highly symmetric structures the search is budgeted and reports *unresolved*. *Publishable
    as:* canonical-form / individualization-refinement methods (à la graph-isomorphism

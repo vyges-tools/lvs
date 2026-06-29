@@ -34,8 +34,9 @@ fn analog_bandgap_renamed_layout_matches_schematic() {
     let job = LvsJob::load("examples/bandgap/match.lvs").expect("load bandgap match job");
     let r = engine::run_job(&job).expect("run");
     assert!(r.matched, "renamed/reordered analog bandgap should MATCH: {r:?}");
-    // M(3) + Q(2) + R(3) + C(1) = 9 devices each side
-    assert_eq!((r.a_devices, r.b_devices), (9, 9));
+    // The two series resistors on the private node a3 combine, so both sides
+    // normalize to M(3) + Q(2) + R(2) + C(1) = 8 devices.
+    assert_eq!((r.a_devices, r.b_devices), (8, 8));
     assert!(r.only_in_a_ports.is_empty() && r.only_in_b_ports.is_empty());
     assert!(r.unbalanced.is_empty(), "a true match has no unbalanced classes");
 }
@@ -45,10 +46,10 @@ fn analog_bandgap_miswired_resistor_mismatches() {
     let job = LvsJob::load("examples/bandgap/mismatch.lvs").expect("load bandgap mismatch job");
     let r = engine::run_job(&job).expect("run");
     assert!(!r.matched, "a mis-wired sense resistor must MISMATCH");
-    // pure CONNECTIVITY error: device counts (and per-kind counts) still match —
-    // unlike the dropped-device case above, this is not a count divergence.
-    assert_eq!((r.a_devices, r.b_devices), (9, 9));
-    assert!(r.device_kind_diff.is_empty(), "no device-count/kind divergence here");
-    // the divergence surfaces as unmatched refinement classes
+    // The miswire moves R_d off a3, so a3 no longer forms a private series node:
+    // the bug's resistors don't combine (3) while the schematic's do (2). The error
+    // surfaces as a resistor-count divergence plus unmatched classes — still caught.
+    assert_eq!((r.a_devices, r.b_devices), (9, 8));
+    assert!(r.device_kind_diff.iter().any(|(k, _, _)| *k == 'R'));
     assert!(!r.unbalanced.is_empty());
 }

@@ -1,7 +1,8 @@
 * Layout with a real analog LVS error: the delta-Vbe sense resistor R_d is
 * mis-wired — its far end lands on VREF instead of the a3 (VZ) branch node.
-* Device counts still match (9 vs 9); this is a pure CONNECTIVITY divergence,
-* the classic "layout shorted the wrong node" — must MISMATCH.
+* In the schematic, R_d and R_z meet at the private node a3 and combine in
+* series; here the miswire leaves a3 with only R_z, so the bug's resistors do
+* NOT combine — the error surfaces as a resistor-count divergence. Must MISMATCH.
 .subckt bandgap VDD VSS VREF
 C_f  VREF VSS cap
 Mpa  a1  g   VDD VDD pfet

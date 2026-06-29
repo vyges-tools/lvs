@@ -203,9 +203,9 @@ fn intern(reg: &mut BTreeMap<String, u64>, key: String) -> u64 {
 /// Compare two netlists. `a` is typically the layout-extracted netlist, `b` the
 /// schematic/reference.
 pub fn compare(a: &Netlist, b: &Netlist) -> LvsResult {
-    // Merge electrically-parallel devices on both sides first, so a transistor laid
-    // out as N fingers matches a single wide schematic device (and vice versa).
-    let (ca, cb) = (combine_parallel(a), combine_parallel(b));
+    // Normalize both sides first (merge parallel + series devices to a fixed point),
+    // so fingered/stacked passives and transistors match their schematic equivalent.
+    let (ca, cb) = (normalize(a), normalize(b));
     let (a, b) = (&ca, &cb);
 
     let mut r = LvsResult {
@@ -703,6 +703,143 @@ fn combine_size(kind: char, group: &[&Device]) -> BTreeMap<String, f64> {
     p
 }
 
+/// Normalize a netlist by merging parallel **and** series devices to a fixed point:
+/// each pass can expose new merges for the other (a series chain may become parallel
+/// to another, etc.). Both passes only ever shrink the device count, so the loop
+/// terminates when it stops shrinking.
+fn normalize(nl: &Netlist) -> Netlist {
+    let mut cur = combine_parallel(nl);
+    loop {
+        let next = combine_parallel(&combine_series(&cur));
+        if next.devices.len() == cur.devices.len() {
+            return next;
+        }
+        cur = next;
+    }
+}
+
+/// Union-find root with path halving.
+fn uf_find(uf: &mut [usize], mut x: usize) -> usize {
+    while uf[x] != x {
+        uf[x] = uf[uf[x]];
+        x = uf[x];
+    }
+    x
+}
+
+/// Series value of a passive chain: resistance and inductance add; capacitance
+/// combines in parallel of reciprocals. A missing value anywhere drops the combined
+/// value (the audit then skips it) rather than inventing one.
+fn series_value(kind: char, group: &[usize], devs: &[Device]) -> BTreeMap<String, f64> {
+    let mut p = BTreeMap::new();
+    if group.iter().all(|&i| devs[i].params.contains_key("value")) {
+        let v = |i: usize| devs[i].params["value"];
+        let combined = match kind {
+            'R' | 'L' => group.iter().map(|&i| v(i)).sum(),
+            'C' if group.iter().all(|&i| v(i) > 0.0) => {
+                1.0 / group.iter().map(|&i| 1.0 / v(i)).sum::<f64>()
+            }
+            _ => return p,
+        };
+        p.insert("value".into(), combined);
+    }
+    p
+}
+
+/// Merge series chains of two-terminal passives (R/L add, C combines reciprocally)
+/// that meet at a **private internal node** — a net that is not a port or supply and
+/// touches exactly those two same-kind passive terminals. Iterating with
+/// [`combine_parallel`] in [`normalize`] collapses longer chains and mixed networks.
+fn combine_series(nl: &Netlist) -> Netlist {
+    let n = nl.devices.len();
+    let is_passive2 = |d: &Device| matches!(d.kind, 'R' | 'C' | 'L') && d.nodes.len() == 2;
+
+    // net -> incident (device, terminal) list
+    let mut incid: BTreeMap<&str, Vec<(usize, usize)>> = BTreeMap::new();
+    for (i, d) in nl.devices.iter().enumerate() {
+        for (p, net) in d.nodes.iter().enumerate() {
+            incid.entry(net.as_str()).or_default().push((i, p));
+        }
+    }
+    let ports: std::collections::BTreeSet<&str> = nl.ports.iter().map(|s| s.as_str()).collect();
+
+    // union devices that meet at a private series node
+    let mut uf: Vec<usize> = (0..n).collect();
+    for (net, inc) in &incid {
+        if inc.len() != 2 || ports.contains(net) || is_supply_name(net) {
+            continue;
+        }
+        let ((d1, _), (d2, _)) = (inc[0], inc[1]);
+        if d1 == d2 {
+            continue; // a single device with both terminals on this net (self-loop)
+        }
+        let (a, b) = (&nl.devices[d1], &nl.devices[d2]);
+        if is_passive2(a) && is_passive2(b) && a.kind == b.kind {
+            let (r1, r2) = (uf_find(&mut uf, d1), uf_find(&mut uf, d2));
+            uf[r1] = r2;
+        }
+    }
+
+    // group devices by chain
+    let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for i in 0..n {
+        let r = uf_find(&mut uf, i);
+        groups.entry(r).or_default().push(i);
+    }
+
+    // For each chain, the endpoints are the nets that appear once across the chain's
+    // terminals (internal nodes appear twice). A simple path has exactly two; merge
+    // it into one device between them. Anything else (e.g. a floating cycle) is left
+    // alone. `merged[min_index] = device`, and non-representative members are dropped.
+    let mut merged: BTreeMap<usize, Device> = BTreeMap::new();
+    let mut dropped: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    for group in groups.values() {
+        if group.len() < 2 {
+            continue;
+        }
+        let mut cnt: BTreeMap<&str, usize> = BTreeMap::new();
+        for &di in group {
+            for net in &nl.devices[di].nodes {
+                *cnt.entry(net.as_str()).or_default() += 1;
+            }
+        }
+        let ends: Vec<&str> = cnt.iter().filter(|(_, &c)| c == 1).map(|(&s, _)| s).collect();
+        if ends.len() != 2 {
+            continue; // not a simple path — leave the devices as they are
+        }
+        let lead = *group.iter().min().unwrap();
+        let kind = nl.devices[lead].kind;
+        let mut nodes = vec![ends[0].to_string(), ends[1].to_string()];
+        nodes.sort();
+        merged.insert(
+            lead,
+            Device {
+                kind,
+                name: format!("{}(+{})", nl.devices[lead].name, group.len()),
+                nodes,
+                model: nl.devices[lead].model.clone(),
+                params: series_value(kind, group, &nl.devices),
+            },
+        );
+        for &di in group {
+            if di != lead {
+                dropped.insert(di);
+            }
+        }
+    }
+
+    // emit in original order: merged device at its lead index, others passed through
+    let mut devices = Vec::with_capacity(n);
+    for i in 0..n {
+        if let Some(d) = merged.remove(&i) {
+            devices.push(d);
+        } else if !dropped.contains(&i) {
+            devices.push(nl.devices[i].clone());
+        }
+    }
+    Netlist { name: nl.name.clone(), ports: nl.ports.clone(), devices }
+}
+
 /// Merge electrically-parallel devices into one each (a netlist normalization run
 /// before comparison). Order is preserved by first occurrence; singletons pass
 /// through unchanged. `X` instances are never merged.
@@ -903,6 +1040,50 @@ mod tests {
     }
 
     #[test]
+    fn series_resistors_combine() {
+        // R(a,n)+R(n,b) through private node n == one 1k from a to b
+        let lay = "R0 a n 500\nR1 n b 500\n";
+        let sch = "R0 a b 1k\n";
+        let r = compare(&nl(lay), &nl(sch));
+        assert!(r.matched, "500+500 series should match 1k: {r:?}");
+    }
+
+    #[test]
+    fn series_chain_of_three_collapses() {
+        let lay = "R0 a n1 1k\nR1 n1 n2 1k\nR2 n2 b 1k\n";
+        let sch = "R0 a b 3k\n";
+        let r = compare(&nl(lay), &nl(sch));
+        assert!(r.matched, "1k+1k+1k chain should match 3k: {r:?}");
+    }
+
+    #[test]
+    fn series_caps_combine_reciprocally() {
+        // 2p in series with 2p == 1p
+        let lay = "C0 a n 2p\nC1 n b 2p\n";
+        let sch = "C0 a b 1p\n";
+        let r = compare(&nl(lay), &nl(sch));
+        assert!(r.matched, "2p series 2p should match 1p: {r:?}");
+    }
+
+    #[test]
+    fn series_value_mismatch_is_caught() {
+        let lay = "R0 a n 500\nR1 n b 700\n"; // 1.2k total
+        let sch = "R0 a b 1k\n";
+        let r = compare(&nl(lay), &nl(sch));
+        assert!(!r.matched, "1.2k series total must not match 1k");
+    }
+
+    #[test]
+    fn series_node_that_is_a_port_is_not_collapsed() {
+        // `n` is an observable port -> the two resistors must stay distinct, so a
+        // single resistor schematic does NOT match.
+        let lay = ".subckt s a b n\nR0 a n 500\nR1 n b 500\n.ends\n";
+        let sch = ".subckt s a b n\nR0 a b 1k\n.ends\n";
+        let r = compare(&nl(lay), &nl(sch));
+        assert!(!r.matched, "a port internal node must block series merge");
+    }
+
+    #[test]
     fn mosfet_width_mismatch_is_caught() {
         // identical topology, but the layout draws the pull-up at half width — a
         // real LVS error a connectivity-only check passes.
@@ -928,11 +1109,13 @@ mod tests {
 
     #[test]
     fn resistor_value_mismatch_is_caught() {
+        // node b is private, so R1+R2 combine in series: layout 1k+5k=6k vs
+        // schematic 1k+2k=3k — the combined value mismatch is caught.
         let sch = "R1 a b 1k\nR2 b c 2k\n";
         let lay = "R1 a b 1k\nR2 b c 5k\n"; // R2 wrong value
         let r = compare(&nl(lay), &nl(sch));
         assert!(!r.matched, "wrong resistor value must MISMATCH");
-        assert!(r.property_diffs.iter().any(|d| d.param == "value" && (d.a_value - 5e3).abs() < 1.0));
+        assert!(r.property_diffs.iter().any(|d| d.param == "value" && (d.a_value - 6e3).abs() < 1.0));
     }
 
     #[test]
