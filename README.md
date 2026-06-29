@@ -53,16 +53,30 @@ vyges-lvs demo                                          # built-in pair, no file
 # common flags: -o FILE · --json · -q/--quiet · -v/--verbose · -h/--help · -V/--version
 ```
 
-## How it compares (v0)
+## How it compares
 
-Name-independent **graph colour-refinement** (1-WL) on the device/net bipartite
-graph: a device's colour folds in its kind/model and its terminals' net-colours (in
-order); a net's colour folds in the multiset of (device-colour, terminal-position) it
+The SPICE reader **flattens hierarchy**: every `X` subckt instance is expanded to
+primitive devices (formal ports bound to the actual nets at the call site, internal
+nets uniquified per instance, `.global` and node `0` kept global). The compare therefore
+runs at **transistor level**, not as a cell-by-cell connectivity check — two layouts that
+instantiate the same cells but wire their internals differently now diverge.
+
+Matching is name-independent **graph colour-refinement** (1-WL) on the device/net
+bipartite graph: a device's colour folds in its kind/model and its terminals' net-colours
+(in order); a net's colour folds in the multiset of (device-colour, terminal-position) it
 touches. Refined to a fixed point on the **disjoint union** of both netlists, the two
-sides MATCH iff every colour class balances — and the classes that *don't* balance are
-the divergence report. Ports are anchored by name (the boundary aligns); internal nets
-match purely by structure. SPICE reader handles `.subckt`/`.ends`, `+` continuation,
-comments, and M/Q/R/C/L/D/X devices.
+sides balance iff every colour class balances. **Supply/global nets are held at a fixed
+colour** so a single local fault stays local instead of cascading across the power rail,
+and unmatched classes are reported **smallest-first** so the offending device/net is named
+at the top of the report. Ports are anchored by name (the boundary aligns); internal nets
+match purely by structure.
+
+1-WL balance is **necessary but not sufficient** (it can't separate certain symmetric
+graphs), so a balanced result is then **confirmed by constructing an explicit device/net
+bijection** — iterative, heap-stacked backtracking that is S/D-symmetry aware. A true
+MATCH is reported as *verified*; a colour-refinement false positive is **refuted**. SPICE
+reader handles `.subckt`/`.ends`, `.global`, `+` continuation, comments, and M/Q/R/C/L/D/X
+devices.
 
 **Source/drain are matched symmetrically** (a MOSFET's S/D are interchangeable); **bulk is
 matched** (gate and bulk positional).
@@ -117,9 +131,11 @@ The extractor handles **hierarchy** (SREF/AREF flattened first), **metal-to-meta
 only where it is *enclosed* by a shape on each). Same-layer connectivity is **true geometric
 overlap** (shapes tiled into rects, not bounding boxes).
 
-**Honest bounds (depth reserved).** The comparator: 1-WL can't separate certain symmetric
-graphs (exact isomorphism with backtracking is depth); a single change can perturb many
-colour classes, so the device/net **count and per-kind diffs are the precise headline**.
+**Honest bounds (depth reserved).** The comparator flattens hierarchy, anchors supply nets
+so a local fault no longer cascades into thousands of spurious classes, and confirms a
+balanced match by constructing an explicit bijection (refuting 1-WL false positives); the
+remaining depth is performance on pathologically symmetric blocks, where that search is
+budget-bounded and reports the symmetry as *unresolved* rather than guessing.
 The extractor (v0): contacts/vias by enclosure (no full DRC), model variants reported as
 device **type** (`hvt` resolved via marker-layer rules; `special_nfet` the remaining depth item),
 Manhattan boolean — all on the `vyges-layout` depth path. **Net-level LVS parity with Magic holds
@@ -139,12 +155,15 @@ compares the netlists you supply. Per-PDK **device-recognition / extraction deck
 (Phase 2, layout-side) ship as separate plugins under that foundry's terms, never in
 this repository.
 
-## Current state (v0)
+## Current state
 
-SPICE compare with MATCH/MISMATCH verdict, device/net counts, per-kind diffs, and
-unmatched-class diagnostics (source/drain symmetric); **native GDS extraction** (Phase 2,
-via the vendored `vyges-layout` kernel); text + JSON; a `--fail-on-mismatch` CI gate. Pure
-std, unit + example tested offline, no subprocess.
+**Transistor-level** SPICE compare (X-subckt hierarchy flattened) with a MATCH/MISMATCH
+verdict, device/net counts, per-kind diffs, and unmatched-class diagnostics — source/drain
+symmetric, **supply-anchored** so a local fault doesn't cascade, and reported smallest-class
+first so the fault is named. A balanced match is **verified by an explicit bijection** (or a
+1-WL false positive **refuted**); the verdict carries a `verified` flag in text + JSON.
+**Native GDS extraction** (Phase 2, via the vendored `vyges-layout` kernel); a
+`--fail-on-mismatch` CI gate. Pure std, unit + example tested offline, no subprocess.
 
 **Verdict-parity correlated against Netgen on a real sky130 block** (see
 [`correlation/`](correlation/)): on a synthesized sky130 counter (23 cells), `vyges-lvs`
