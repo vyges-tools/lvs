@@ -30,6 +30,52 @@ pub struct Unbalanced {
     pub b_examples: Vec<String>,
 }
 
+/// A device that matches topologically but carries an out-of-tolerance parameter
+/// (a MOSFET drawn at the wrong width, a resistor of the wrong value, …).
+#[derive(Debug, Clone)]
+pub struct PropDiff {
+    pub kind: char,
+    pub a_device: String,
+    pub b_device: String,
+    pub param: String,
+    pub a_value: f64,
+    pub b_value: f64,
+}
+
+/// Relative tolerance for device-parameter equality (1%). Drawn dimensions /
+/// values within this band are treated as the same; beyond it is an LVS error.
+const PROP_TOL: f64 = 0.01;
+
+/// The parameters worth checking per device kind: MOSFET geometry, passive value.
+fn sig_keys(kind: char) -> &'static [&'static str] {
+    match kind {
+        'M' => &["w", "l", "nf", "m"],
+        'R' | 'C' | 'L' => &["value"],
+        _ => &[],
+    }
+}
+
+/// Two parameter values agree within relative tolerance (both ~0 agree).
+fn within_tol(a: f64, b: f64, tol: f64) -> bool {
+    let scale = a.abs().max(b.abs());
+    scale < 1e-18 || (a - b).abs() <= tol * scale
+}
+
+/// Whether two devices' significant parameters all agree within tolerance. Only
+/// keys present on **both** sides are compared, so a netlist that omits a default
+/// never forces a false mismatch.
+fn props_compatible(
+    kind: char,
+    a: &std::collections::BTreeMap<String, f64>,
+    b: &std::collections::BTreeMap<String, f64>,
+    tol: f64,
+) -> bool {
+    sig_keys(kind).iter().all(|k| match (a.get(*k), b.get(*k)) {
+        (Some(&av), Some(&bv)) => within_tol(av, bv, tol),
+        _ => true,
+    })
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LvsResult {
     pub matched: bool,
@@ -46,10 +92,13 @@ pub struct LvsResult {
     pub only_in_b_ports: Vec<String>,
     pub device_kind_diff: Vec<(char, usize, usize)>, // (kind, a, b) where they differ
     pub unbalanced: Vec<Unbalanced>,
+    /// Devices that match topologically but whose parameters (W/L, value) differ
+    /// beyond tolerance — a real LVS error a pure connectivity check misses.
+    pub property_diffs: Vec<PropDiff>,
     pub iterations: usize,
-    /// Human-readable qualifier on the verdict (refuted false-MATCH, or
-    /// unresolved symmetry). `None` for a clean verified MATCH or a normal
-    /// count/colour MISMATCH.
+    /// Human-readable qualifier on the verdict (refuted false-MATCH, parameter
+    /// mismatch, or unresolved symmetry). `None` for a clean verified MATCH or a
+    /// normal count/colour MISMATCH.
     pub note: Option<String>,
 }
 
@@ -275,20 +324,21 @@ pub fn compare(a: &Netlist, b: &Netlist) -> LvsResult {
         && r.unbalanced.is_empty();
 
     // 1-WL balance is *necessary* but not *sufficient* (symmetric graphs can fool
-    // it). When the counts balance, try to construct an explicit isomorphism — a
-    // device/net bijection that preserves every terminal connection — to either
-    // prove the MATCH or refute a colour-refinement false positive.
+    // it). When the counts balance, construct an explicit device/net bijection that
+    // preserves every connection — and that also matches device parameters within
+    // tolerance — to prove the MATCH, refute a false positive, or surface a
+    // parameter error.
     if r.matched {
-        match verify_iso(&g, &dev_c, &net_c) {
+        // global device order matches `build`: all of A's devices, then all of B's.
+        let a_n = a.devices.len();
+        let params: Vec<&std::collections::BTreeMap<String, f64>> =
+            a.devices.iter().chain(b.devices.iter()).map(|d| &d.params).collect();
+        let prop_ok = |ai: usize, bi: usize| {
+            props_compatible(g.dev_kind[ai], params[ai], params[bi], PROP_TOL)
+        };
+
+        match verify_iso(&g, &dev_c, &net_c, &prop_ok).0 {
             Verify::Verified => r.verified = true,
-            Verify::Refuted => {
-                r.matched = false;
-                r.note = Some(
-                    "colour counts balance but no consistent device/net bijection \
-                     exists — refuted 1-WL false MATCH"
-                        .into(),
-                );
-            }
             Verify::Unresolved => {
                 r.note = Some(
                     "MATCH by colour refinement; explicit isomorphism not constructed \
@@ -296,9 +346,76 @@ pub fn compare(a: &Netlist, b: &Netlist) -> LvsResult {
                         .into(),
                 );
             }
+            Verify::Refuted => {
+                // No parameter-respecting bijection. Retry on topology alone: if that
+                // succeeds, the topology is fine and the failure is a parameter error
+                // — audit the mapping to name the offending device/param.
+                let (v2, map) = verify_iso(&g, &dev_c, &net_c, &|_, _| true);
+                match v2 {
+                    Verify::Verified => {
+                        r.property_diffs = audit_props(&map, a_n, a, b, PROP_TOL);
+                        if r.property_diffs.is_empty() {
+                            r.verified = true; // defensive: nothing actually differs
+                        } else {
+                            r.matched = false;
+                            r.note = Some(
+                                "device topology matches but device parameters differ \
+                                 beyond tolerance (W/L or value)"
+                                    .into(),
+                            );
+                        }
+                    }
+                    Verify::Refuted => {
+                        r.matched = false;
+                        r.note = Some(
+                            "colour counts balance but no consistent device/net bijection \
+                             exists — refuted 1-WL false MATCH"
+                                .into(),
+                        );
+                    }
+                    Verify::Unresolved => {
+                        r.note = Some(
+                            "MATCH by colour refinement; explicit isomorphism not constructed \
+                             within budget (highly symmetric) — necessary, not confirmed sufficient"
+                                .into(),
+                        );
+                    }
+                }
+            }
         }
     }
     r
+}
+
+/// Compare device parameters across the constructed bijection, collecting the
+/// out-of-tolerance ones. `map` is `(a_global, b_global)` device indices; global
+/// order is all of A's devices then all of B's (so `b_global - a_n` indexes B).
+fn audit_props(
+    map: &[(usize, usize)],
+    a_n: usize,
+    a: &Netlist,
+    b: &Netlist,
+    tol: f64,
+) -> Vec<PropDiff> {
+    let mut diffs = Vec::new();
+    for &(ag, bg) in map {
+        let (da, db) = (&a.devices[ag], &b.devices[bg - a_n]);
+        for key in sig_keys(da.kind) {
+            if let (Some(&av), Some(&bv)) = (da.params.get(*key), db.params.get(*key)) {
+                if !within_tol(av, bv, tol) {
+                    diffs.push(PropDiff {
+                        kind: da.kind,
+                        a_device: da.name.clone(),
+                        b_device: db.name.clone(),
+                        param: (*key).into(),
+                        a_value: av,
+                        b_value: bv,
+                    });
+                }
+            }
+        }
+    }
+    diffs
 }
 
 /// Recursion-free budget for the bijection search. Asymmetric circuits resolve in
@@ -371,7 +488,17 @@ fn assign_device(
 /// over colour classes (an iterative, heap-stacked VF2 — so a 400k-device netlist
 /// can't overflow the call stack). Singleton classes force a unique match and the
 /// search runs forward; only genuine symmetry causes branching.
-fn verify_iso(g: &Graph, dev_c: &[u64], net_c: &[u64]) -> Verify {
+///
+/// `compatible(a_dev, b_dev)` gates which device pairings are allowed (used to
+/// require matching device parameters); pass `|_,_| true` for topology only.
+/// Returns the verdict and, on `Verified`, the `(a_dev, b_dev)` global-index
+/// bijection it built.
+fn verify_iso(
+    g: &Graph,
+    dev_c: &[u64],
+    net_c: &[u64],
+    compatible: &dyn Fn(usize, usize) -> bool,
+) -> (Verify, Vec<(usize, usize)>) {
     let (ndev, nnet) = (dev_c.len(), net_c.len());
 
     // candidate B devices grouped by refined colour
@@ -388,7 +515,7 @@ fn verify_iso(g: &Graph, dev_c: &[u64], net_c: &[u64]) -> Verify {
     a_devs.sort_by_key(|&i| b_by_colour.get(&dev_c[i]).map_or(0, |v| v.len()));
     let m = a_devs.len();
     if m == 0 {
-        return Verify::Verified;
+        return (Verify::Verified, Vec::new());
     }
 
     let mut net_map = vec![-1i64; nnet];
@@ -436,7 +563,7 @@ fn verify_iso(g: &Graph, dev_c: &[u64], net_c: &[u64]) -> Verify {
 
     loop {
         if budget == 0 {
-            return Verify::Unresolved;
+            return (Verify::Unresolved, Vec::new());
         }
         let idx = stack.len() - 1;
         let da = a_devs[idx];
@@ -464,10 +591,10 @@ fn verify_iso(g: &Graph, dev_c: &[u64], net_c: &[u64]) -> Verify {
                 fr.oi += 1;
                 budget -= 1;
                 if budget == 0 {
-                    return Verify::Unresolved;
+                    return (Verify::Unresolved, Vec::new());
                 }
-                if dev_used[db] || !same_arity {
-                    break; // skip remaining orientations for an unusable candidate
+                if dev_used[db] || !same_arity || !compatible(da, db) {
+                    break; // skip an unusable / parameter-incompatible candidate
                 }
                 let mut undo = Vec::new();
                 if assign_device(da, db, o, g, net_c, &mut net_map, &mut rev_net, &mut undo) {
@@ -493,7 +620,9 @@ fn verify_iso(g: &Graph, dev_c: &[u64], net_c: &[u64]) -> Verify {
             let last = idx + 1 == m;
             stack.push(fr);
             if last {
-                return Verify::Verified;
+                let map =
+                    stack.iter().enumerate().map(|(k, f)| (a_devs[k], f.placed as usize)).collect();
+                return (Verify::Verified, map);
             }
             stack.push(Frame { cands: cand_list(idx + 1), ci: 0, oi: 0, undo: vec![], placed: -1 });
         } else {
@@ -503,7 +632,7 @@ fn verify_iso(g: &Graph, dev_c: &[u64], net_c: &[u64]) -> Verify {
                     p.ci += 1;
                     p.oi = 0;
                 }
-                None => return Verify::Refuted,
+                None => return (Verify::Refuted, Vec::new()),
             }
         }
     }
@@ -634,6 +763,39 @@ mod tests {
         // anchoring must not create false mismatches on a clean design
         let r = compare(&bank(200, false), &bank(200, false));
         assert!(r.matched, "identical supply-heavy banks must MATCH: {} classes", r.unbalanced.len());
+    }
+
+    #[test]
+    fn mosfet_width_mismatch_is_caught() {
+        // identical topology, but the layout draws the pull-up at half width — a
+        // real LVS error a connectivity-only check passes.
+        let sch = ".subckt inv A Y VDD VSS\nMp Y A VDD VDD pfet w=2u l=0.15u\nMn Y A VSS VSS nfet w=1u l=0.15u\n.ends\n";
+        let lay = ".subckt inv A Y VDD VSS\nMp Y A VDD VDD pfet w=1u l=0.15u\nMn Y A VSS VSS nfet w=1u l=0.15u\n.ends\n";
+        let r = compare(&nl(lay), &nl(sch));
+        assert!(!r.matched, "a wrong transistor width must MISMATCH");
+        assert_eq!(r.property_diffs.len(), 1, "exactly the pull-up width differs: {:?}", r.property_diffs);
+        let d = &r.property_diffs[0];
+        assert_eq!((d.kind, d.param.as_str()), ('M', "w"));
+        assert!((d.a_value - 1e-6).abs() < 1e-15 && (d.b_value - 2e-6).abs() < 1e-15);
+    }
+
+    #[test]
+    fn matching_widths_within_tolerance_pass() {
+        // 0.5% apart on a 1% tolerance -> the same device.
+        let sch = ".subckt inv A Y VDD VSS\nMp Y A VDD VDD pfet w=2.00u l=0.15u\nMn Y A VSS VSS nfet w=1u l=0.15u\n.ends\n";
+        let lay = ".subckt inv A Y VDD VSS\nMp Y A VDD VDD pfet w=2.01u l=0.15u\nMn Y A VSS VSS nfet w=1u l=0.15u\n.ends\n";
+        let r = compare(&nl(lay), &nl(sch));
+        assert!(r.matched && r.verified, "within-tolerance widths should verify: {r:?}");
+        assert!(r.property_diffs.is_empty());
+    }
+
+    #[test]
+    fn resistor_value_mismatch_is_caught() {
+        let sch = "R1 a b 1k\nR2 b c 2k\n";
+        let lay = "R1 a b 1k\nR2 b c 5k\n"; // R2 wrong value
+        let r = compare(&nl(lay), &nl(sch));
+        assert!(!r.matched, "wrong resistor value must MISMATCH");
+        assert!(r.property_diffs.iter().any(|d| d.param == "value" && (d.a_value - 5e3).abs() < 1.0));
     }
 
     #[test]

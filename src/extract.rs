@@ -496,6 +496,10 @@ pub fn extract(lib: &Library, top: Option<&str>, rules: &Rules) -> Result<Netlis
             name: format!("M{i}"),
             nodes: vec![net_name(s), net_name(g), net_name(d), bulk],
             model,
+            // device dimensions from layout geometry are a depth item; with no
+            // params here the comparator's property audit simply skips W/L for
+            // GDS-extracted devices (compares only params present on both sides).
+            params: std::collections::BTreeMap::new(),
         });
     }
     if dbg && skipped > 0 {

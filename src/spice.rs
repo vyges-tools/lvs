@@ -15,7 +15,13 @@
 //! differently now diverge. An `X` whose subckt is *not* defined degrades to an
 //! opaque device (its connectivity is still mapped through the hierarchy).
 //!
+//! Device **parameters** (MOSFET `w`/`l`/`nf`/`m`, and the value of an `R`/`C`/`L`)
+//! are captured too, so the comparator can check them — a layout that matches
+//! topologically but draws a transistor at the wrong width is a real LVS error.
+//!
 //! Depth reserved: inline `X` parameters and `.param` evaluation.
+
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Device {
@@ -23,6 +29,61 @@ pub struct Device {
     pub name: String,       // instance name (as written)
     pub nodes: Vec<String>, // ordered terminal nets
     pub model: String,      // model / subckt / value (may be empty)
+    /// Numeric device parameters in SI units (e.g. `w`, `l`, `nf`, `m`, or the
+    /// passive `value`). Keys are lowercased; SPICE engineering suffixes resolved.
+    pub params: BTreeMap<String, f64>,
+}
+
+/// Parse a SPICE numeric literal with an optional engineering suffix
+/// (`1k`, `2.5u`, `0.18µ`, `3meg`, `1e-9`), returning the value in base SI units.
+/// Trailing unit letters after the multiplier (e.g. the `f` in `1.2pf`) are
+/// ignored. Returns `None` if there is no leading number.
+pub fn parse_spice_num(tok: &str) -> Option<f64> {
+    let t = tok.trim();
+    let b = t.as_bytes();
+    let mut i = 0;
+    if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
+        i += 1;
+    }
+    while i < b.len() && (b[i].is_ascii_digit() || b[i] == b'.') {
+        i += 1;
+    }
+    // optional exponent `e[+-]?digits` (back off if it isn't a real exponent)
+    if i < b.len() && (b[i] == b'e' || b[i] == b'E') {
+        let save = i;
+        i += 1;
+        if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
+            i += 1;
+        }
+        let mut got = false;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+            got = true;
+        }
+        if !got {
+            i = save;
+        }
+    }
+    let base: f64 = t[..i].parse().ok()?;
+    let suffix = t[i..].trim().to_ascii_lowercase();
+    let mult = if suffix.starts_with("meg") {
+        1e6
+    } else {
+        match suffix.chars().next() {
+            None => 1.0,
+            Some('t') => 1e12,
+            Some('g') => 1e9,
+            Some('k') => 1e3,
+            Some('m') => 1e-3, // 'meg' handled above; bare 'm' = milli
+            Some('u') | Some('µ') => 1e-6,
+            Some('n') => 1e-9,
+            Some('p') => 1e-12,
+            Some('f') => 1e-15,
+            Some('a') => 1e-18,
+            _ => 1.0, // unrecognized trailing unit -> treat as a bare number
+        }
+    };
+    Some(base * mult)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -132,6 +193,9 @@ impl Netlist {
 
 use std::collections::BTreeMap as FlatMap;
 
+/// Resolves a node name in the current expansion frame (port subst + path prefix).
+type Resolve<'a> = dyn Fn(&str, &FlatMap<String, String>, &str) -> String + 'a;
+
 /// Recursively expand the cell's `X` instances down to primitive devices.
 ///
 /// At each level a node is resolved in the current namespace: a formal port maps
@@ -168,7 +232,7 @@ fn expand(
     subst: &FlatMap<String, String>,
     prefix: &str,
     depth: usize,
-    resolve: &dyn Fn(&str, &FlatMap<String, String>, &str) -> String,
+    resolve: &Resolve<'_>,
     out: &mut Vec<Device>,
 ) {
     for d in &cell.devices {
@@ -189,6 +253,7 @@ fn expand(
                 name: format!("{prefix}{}", d.name),
                 nodes,
                 model: d.model.clone(),
+                params: d.params.clone(),
             }),
         }
     }
@@ -207,7 +272,7 @@ fn parse_device(toks: &[&str]) -> Result<Option<Device>, SpiceError> {
         }
         let model = toks[toks.len() - 1].to_string();
         let nodes = toks[1..toks.len() - 1].iter().map(|s| s.to_string()).collect();
-        return Ok(Some(Device { kind, name, nodes, model }));
+        return Ok(Some(Device { kind, name, nodes, model, params: BTreeMap::new() }));
     }
     let Some(nt) = fixed_terms(kind) else {
         return Ok(None); // unknown device kind -> skip (don't guess connectivity)
@@ -216,8 +281,36 @@ fn parse_device(toks: &[&str]) -> Result<Option<Device>, SpiceError> {
         return Err(SpiceError(format!("device {name} needs {nt} terminals: {:?}", toks.join(" "))));
     }
     let nodes = toks[1..1 + nt].iter().map(|s| s.to_string()).collect();
-    let model = toks.get(1 + nt).map(|s| s.to_string()).unwrap_or_default();
-    Ok(Some(Device { kind, name, nodes, model }))
+    let rest = &toks[1 + nt..];
+    let (model, params) = device_params(kind, rest);
+    Ok(Some(Device { kind, name, nodes, model, params }))
+}
+
+/// From the tokens after a device's terminals, split out the model name and the
+/// numeric parameters. `key=value` tokens become params (lowercased key); a bare
+/// leading number is the passive **value** (`R1 a b 1k` → `value = 1000`); a bare
+/// non-numeric token is the model/subckt name (`Mp … pfet`).
+fn device_params(kind: char, rest: &[&str]) -> (String, BTreeMap<String, f64>) {
+    let mut model = String::new();
+    let mut params: BTreeMap<String, f64> = BTreeMap::new();
+    for (i, tok) in rest.iter().enumerate() {
+        if let Some((k, v)) = tok.split_once('=') {
+            if let Some(n) = parse_spice_num(v) {
+                params.insert(k.to_ascii_lowercase(), n);
+            }
+        } else if i == 0 {
+            // first bare token: a passive's value if numeric, else the model name
+            match (matches!(kind, 'R' | 'C' | 'L'), parse_spice_num(tok)) {
+                (true, Some(n)) => {
+                    params.insert("value".into(), n);
+                }
+                _ => model = tok.to_string(),
+            }
+        } else if model.is_empty() && parse_spice_num(tok).is_none() {
+            model = tok.to_string();
+        }
+    }
+    (model, params)
 }
 
 /// Split into statements: strip comments, join `+` continuations.
@@ -278,7 +371,34 @@ Mn Y A VSS VSS nfet w=0.5 l=0.15
         let n = Netlist::parse(t, None).unwrap();
         assert_eq!(n.devices.len(), 2);
         assert_eq!(n.devices[0].nodes, ["a", "b"]);
-        assert_eq!(n.devices[0].model, "1k");
+        // a passive's value is captured as a numeric param, not the model string
+        assert_eq!(n.devices[0].params.get("value"), Some(&1000.0));
+        assert_eq!(n.devices[1].params.get("value"), Some(&1e-12));
+    }
+
+    fn approx(a: Option<f64>, b: f64) -> bool {
+        a.map(|v| (v - b).abs() <= b.abs() * 1e-12).unwrap_or(false)
+    }
+
+    #[test]
+    fn parses_mosfet_w_l_and_suffixes() {
+        let n = Netlist::parse("M1 d g s b nfet w=2u l=0.15u nf=4\n", None).unwrap();
+        let p = &n.devices[0].params;
+        assert_eq!(n.devices[0].model, "nfet");
+        assert!(approx(p.get("w").copied(), 2e-6));
+        assert!(approx(p.get("l").copied(), 0.15e-6));
+        assert!(approx(p.get("nf").copied(), 4.0));
+    }
+
+    #[test]
+    fn spice_num_suffixes() {
+        assert!(approx(parse_spice_num("1k"), 1e3));
+        assert!(approx(parse_spice_num("3meg"), 3e6));
+        assert!(approx(parse_spice_num("2.5u"), 2.5e-6));
+        assert!(approx(parse_spice_num("1p"), 1e-12));
+        assert!(approx(parse_spice_num("1.2pf"), 1.2e-12)); // trailing unit ignored
+        assert!(approx(parse_spice_num("1e-9"), 1e-9));
+        assert_eq!(parse_spice_num("nfet"), None);
     }
 
     const HIER: &str = "\

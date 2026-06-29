@@ -78,6 +78,14 @@ MATCH is reported as *verified*; a colour-refinement false positive is **refuted
 reader handles `.subckt`/`.ends`, `.global`, `+` continuation, comments, and M/Q/R/C/L/D/X
 devices.
 
+**Device parameters are checked, not just topology.** The reader captures MOSFET `w`/`l`
+(and `nf`/`m`) and the value of an `R`/`C`/`L` (SPICE engineering suffixes resolved). The
+bijection is required to pair only parameter-compatible devices (1% relative tolerance);
+when topology matches but a parameter doesn't, the verdict is a **parameter mismatch** that
+names the device and the offending parameter — a transistor drawn at the wrong width is a
+real LVS error a connectivity-only check passes. Only parameters present on both sides are
+compared, so a netlist that omits a default never forces a false mismatch.
+
 **Source/drain are matched symmetrically** (a MOSFET's S/D are interchangeable); **bulk is
 matched** (gate and bulk positional).
 
@@ -162,8 +170,15 @@ verdict, device/net counts, per-kind diffs, and unmatched-class diagnostics — 
 symmetric, **supply-anchored** so a local fault doesn't cascade, and reported smallest-class
 first so the fault is named. A balanced match is **verified by an explicit bijection** (or a
 1-WL false positive **refuted**); the verdict carries a `verified` flag in text + JSON.
+**Device parameters** (MOSFET W/L, passive value) are checked on the matched bijection to a
+1% tolerance, so a wrong-width transistor is reported as a named parameter mismatch.
 **Native GDS extraction** (Phase 2, via the vendored `vyges-layout` kernel); a
 `--fail-on-mismatch` CI gate. Pure std, unit + example tested offline, no subprocess.
+
+Depth still reserved on the comparator: **series/parallel device combining** (merging
+fingered or stacked devices before the match), and W/L for **GDS-extracted** devices (their
+parameters would come from channel geometry; today the property audit simply skips
+parameters absent on one side).
 
 **Verdict-parity correlated against Netgen on a real sky130 block** (see
 [`correlation/`](correlation/)): on a synthesized sky130 counter (23 cells), `vyges-lvs`

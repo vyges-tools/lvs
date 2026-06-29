@@ -60,6 +60,19 @@ pub fn render_report(r: &LvsResult) -> String {
         }
         return s;
     }
+    if !r.property_diffs.is_empty() {
+        s.push_str("\n  device parameter mismatch (topology matches):\n");
+        for d in r.property_diffs.iter().take(12) {
+            s.push_str(&format!(
+                "    {} {}: {} layout {} vs schematic {}\n",
+                d.kind, d.a_device, d.param, d.a_value, d.b_value
+            ));
+        }
+        if r.property_diffs.len() > 12 {
+            s.push_str(&format!("    … {} more\n", r.property_diffs.len() - 12));
+        }
+        return s;
+    }
     if let Some(n) = &r.note {
         s.push_str(&format!("\n  {n}\n"));
         return s;
@@ -100,6 +113,22 @@ pub fn report_json(r: &LvsResult) -> String {
         s.push_str(&format!(
             "    {{\"what\": {}, \"a_count\": {}, \"b_count\": {}, \"a\": [{}], \"b\": [{}]}}{}\n",
             jstr(u.what), u.a_count, u.b_count, jlist(&u.a_examples), jlist(&u.b_examples), comma
+        ));
+    }
+    s.push_str("  ],\n");
+    s.push_str("  \"property_diffs\": [\n");
+    for (k, d) in r.property_diffs.iter().enumerate() {
+        let comma = if k + 1 < r.property_diffs.len() { "," } else { "" };
+        s.push_str(&format!(
+            "    {{\"kind\": {}, \"a_device\": {}, \"b_device\": {}, \"param\": {}, \
+             \"a_value\": {}, \"b_value\": {}}}{}\n",
+            jstr(&d.kind.to_string()),
+            jstr(&d.a_device),
+            jstr(&d.b_device),
+            jstr(&d.param),
+            d.a_value,
+            d.b_value,
+            comma
         ));
     }
     s.push_str("  ]\n}\n");
