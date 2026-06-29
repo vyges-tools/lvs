@@ -9,9 +9,13 @@
 //! classes that *don't* balance are the divergence report.
 //!
 //! Ports are anchored by name (the layout/schematic boundary), so corresponding
-//! ports align; internal nets are matched purely by structure. v0 bound: 1-WL can't
-//! separate certain symmetric graphs (exact backtracking is the depth pass), and
-//! terminals are position-sensitive (source/drain symmetry is a depth item).
+//! ports align; internal nets are matched purely by structure. Supply/global nets
+//! are held at a fixed colour so a local fault can't cascade across the power rail
+//! (see [`is_supply_name`]). 1-WL alone is *necessary but not sufficient* — it can't
+//! separate certain symmetric graphs — so a balanced refinement is then confirmed by
+//! constructing an explicit device/net bijection ([`verify_iso`]), which both proves
+//! a true MATCH and refutes a colour-refinement false positive. MOSFET source/drain
+//! symmetry is handled in both the refinement and the bijection search.
 
 use std::collections::BTreeMap;
 
@@ -29,6 +33,11 @@ pub struct Unbalanced {
 #[derive(Debug, Clone, Default)]
 pub struct LvsResult {
     pub matched: bool,
+    /// `matched` rests on an explicitly **constructed device/net bijection**, not
+    /// just balanced colour counts — so the MATCH is sufficient, not merely the
+    /// 1-WL necessary condition. `false` on a MISMATCH, or on a MATCH whose
+    /// symmetry the bounded search couldn't resolve (see `note`).
+    pub verified: bool,
     pub a_devices: usize,
     pub b_devices: usize,
     pub a_nets: usize,
@@ -38,6 +47,21 @@ pub struct LvsResult {
     pub device_kind_diff: Vec<(char, usize, usize)>, // (kind, a, b) where they differ
     pub unbalanced: Vec<Unbalanced>,
     pub iterations: usize,
+    /// Human-readable qualifier on the verdict (refuted false-MATCH, or
+    /// unresolved symmetry). `None` for a clean verified MATCH or a normal
+    /// count/colour MISMATCH.
+    pub note: Option<String>,
+}
+
+/// Outcome of the explicit-isomorphism construction.
+enum Verify {
+    /// A consistent bijection exists — the MATCH is proven.
+    Verified,
+    /// Colour counts balance but no consistent bijection exists — 1-WL false MATCH.
+    Refuted,
+    /// Search budget exhausted on highly symmetric structure — necessary
+    /// condition holds, sufficiency unconfirmed.
+    Unresolved,
 }
 
 struct Graph {
@@ -48,8 +72,27 @@ struct Graph {
     dev_terms: Vec<Vec<usize>>,     // net indices, ordered
     net_side: Vec<u8>,
     net_label: Vec<String>,
-    net_init: Vec<String>,          // initial colour seed (port name or generic)
+    net_name: Vec<String>,          // raw net name (no side prefix), for supply detection
+    net_init: Vec<String>,          // initial colour seed (port name / supply / generic)
     net_incid: Vec<Vec<(usize, usize)>>, // (device idx, terminal position)
+}
+
+/// Power/ground nets are connected to a huge fraction of the devices, so under
+/// plain 1-WL a *single* changed device anywhere shifts the supply net's colour
+/// and that change then cascades to every device on the supply — turning one
+/// real fault into tens of thousands of spurious "divergence classes" (the exact
+/// failure netgen sidesteps by special-casing supplies). We detect supplies two
+/// ways — by conventional name, and by degree — and hold their colour fixed so a
+/// fault stays local to the gate that owns it.
+fn is_supply_name(name: &str) -> bool {
+    // strip a leading bus/hier path; compare the leaf, case-insensitively
+    let leaf = name.rsplit(['/', '.', ':']).next().unwrap_or(name);
+    const SUPPLY: &[&str] = &[
+        "0", "vdd", "vss", "gnd", "vcc", "vee", "vpwr", "vgnd", "vnb", "vpb", "vbn", "vbp",
+        "vdda", "vssa", "vccd", "vssd", "avdd", "avss", "dvdd", "dvss", "vbb", "vpp", "vsub",
+    ];
+    let lc = leaf.to_ascii_lowercase();
+    SUPPLY.contains(&lc.as_str())
 }
 
 fn build(a: &Netlist, b: &Netlist) -> Graph {
@@ -60,6 +103,7 @@ fn build(a: &Netlist, b: &Netlist) -> Graph {
         dev_terms: vec![],
         net_side: vec![],
         net_label: vec![],
+        net_name: vec![],
         net_init: vec![],
         net_incid: vec![],
     };
@@ -73,8 +117,16 @@ fn build(a: &Netlist, b: &Netlist) -> Graph {
             let i = g.net_side.len();
             g.net_side.push(side);
             g.net_label.push(format!("{}/{}", if side == 0 { "A" } else { "B" }, name));
+            g.net_name.push(name.to_string());
+            // supplies anchored by their canonical name (so VDD ≠ VSS, side-independent);
             // ports anchored by name (boundary aligns); internals generic
-            g.net_init.push(if ports.contains(name) { format!("P:{name}") } else { "n".into() });
+            g.net_init.push(if is_supply_name(name) {
+                format!("S:{}", name.to_ascii_uppercase())
+            } else if ports.contains(name) {
+                format!("P:{name}")
+            } else {
+                "n".into()
+            });
             g.net_incid.push(vec![]);
             net_id.insert(name.to_string(), i);
             i
@@ -148,6 +200,16 @@ pub fn compare(a: &Netlist, b: &Netlist) -> LvsResult {
     let mut net_c: Vec<u64> = g.net_init.iter().map(|s| intern(&mut reg, format!("x{s}"))).collect();
     let mut prev = reg.len();
 
+    // Anchor supplies: a net is held at a fixed colour (excluded from refinement)
+    // if it is a named supply OR its degree is large enough to be a global rail —
+    // touched by far more terminals than any signal net. The degree gate scales
+    // with the design so small circuits rely on the name list alone.
+    let ndev = g.dev_side.len().max(1);
+    let deg_gate = (ndev / 20).max(32);
+    let supply: Vec<bool> = (0..g.net_side.len())
+        .map(|j| is_supply_name(&g.net_name[j]) || g.net_incid[j].len() >= deg_gate)
+        .collect();
+
     // refine to a fixed point
     let mut iters = 0;
     for _ in 0..64 {
@@ -172,6 +234,11 @@ pub fn compare(a: &Netlist, b: &Netlist) -> LvsResult {
             nd[i] = intern(&mut reg, s);
         }
         for (j, incid) in g.net_incid.iter().enumerate() {
+            if supply[j] {
+                // held fixed — a fault elsewhere on the rail must not cascade here
+                nn[j] = net_c[j];
+                continue;
+            }
             let mut parts: Vec<String> = incid
                 .iter()
                 .map(|&(d, pos)| {
@@ -196,13 +263,250 @@ pub fn compare(a: &Netlist, b: &Netlist) -> LvsResult {
     // tally each colour class A vs B (devices and nets separately)
     r.unbalanced = unbalanced("device", &dev_c, &g.dev_side, &g.dev_label);
     r.unbalanced.extend(unbalanced("net", &net_c, &g.net_side, &g.net_label));
+    // Smallest classes first: a localized fault lands in a tiny (often singleton)
+    // class, so the actual offending device/net is named at the top of the report
+    // rather than buried under large balanced-but-shifted populations.
+    r.unbalanced.sort_by_key(|u| u.a_count + u.b_count);
 
     r.matched = r.only_in_a_ports.is_empty()
         && r.only_in_b_ports.is_empty()
         && r.a_devices == r.b_devices
         && r.a_nets == r.b_nets
         && r.unbalanced.is_empty();
+
+    // 1-WL balance is *necessary* but not *sufficient* (symmetric graphs can fool
+    // it). When the counts balance, try to construct an explicit isomorphism — a
+    // device/net bijection that preserves every terminal connection — to either
+    // prove the MATCH or refute a colour-refinement false positive.
+    if r.matched {
+        match verify_iso(&g, &dev_c, &net_c) {
+            Verify::Verified => r.verified = true,
+            Verify::Refuted => {
+                r.matched = false;
+                r.note = Some(
+                    "colour counts balance but no consistent device/net bijection \
+                     exists — refuted 1-WL false MATCH"
+                        .into(),
+                );
+            }
+            Verify::Unresolved => {
+                r.note = Some(
+                    "MATCH by colour refinement; explicit isomorphism not constructed \
+                     within budget (highly symmetric) — necessary, not confirmed sufficient"
+                        .into(),
+                );
+            }
+        }
+    }
     r
+}
+
+/// Recursion-free budget for the bijection search. Asymmetric circuits resolve in
+/// one forward pass (each device has a single candidate); the budget only bites on
+/// pathologically symmetric structure, where we report `Unresolved` rather than
+/// guess.
+const VERIFY_BUDGET: u64 = 5_000_000;
+
+/// Terminal-correspondence orientations to try for a device kind: a MOSFET's
+/// source/drain (positions 0 and 2) are interchangeable, everything else is fixed.
+fn orient_count(kind: char, terms: usize) -> usize {
+    if kind == 'M' && terms >= 4 {
+        2
+    } else {
+        1
+    }
+}
+
+/// The (a_pos, b_pos) terminal pairs for matching device `da`→`db` under
+/// orientation `o`. Orientation 1 swaps the MOSFET source/drain.
+fn term_pairs(kind: char, n: usize, o: usize) -> Vec<(usize, usize)> {
+    if kind == 'M' && n >= 4 {
+        let mut p = if o == 0 {
+            vec![(0, 0), (1, 1), (2, 2), (3, 3)]
+        } else {
+            vec![(0, 2), (1, 1), (2, 0), (3, 3)]
+        };
+        p.extend((4..n).map(|i| (i, i))); // any extra positional terminals
+        p
+    } else {
+        (0..n).map(|i| (i, i)).collect()
+    }
+}
+
+/// Try to bind every terminal of `da`→`db` under orientation `o`; record each new
+/// net assignment in `undo`. Returns false (leaving `undo` for the caller to roll
+/// back) on the first inconsistency.
+#[allow(clippy::too_many_arguments)]
+fn assign_device(
+    da: usize,
+    db: usize,
+    o: usize,
+    g: &Graph,
+    net_c: &[u64],
+    net_map: &mut [i64],
+    rev_net: &mut [i64],
+    undo: &mut Vec<usize>,
+) -> bool {
+    let (ta, tb) = (&g.dev_terms[da], &g.dev_terms[db]);
+    for (ap, bp) in term_pairs(g.dev_kind[da], ta.len(), o) {
+        let (a, b) = (ta[ap], tb[bp]);
+        if net_map[a] != -1 {
+            if net_map[a] != b as i64 {
+                return false;
+            }
+        } else if rev_net[b] != -1 {
+            return false; // b already claimed by a different a-net
+        } else if net_c[a] != net_c[b] {
+            return false; // refined colours must agree
+        } else {
+            net_map[a] = b as i64;
+            rev_net[b] = a as i64;
+            undo.push(a);
+        }
+    }
+    true
+}
+
+/// Construct an explicit isomorphism between the A and B sides by backtracking
+/// over colour classes (an iterative, heap-stacked VF2 — so a 400k-device netlist
+/// can't overflow the call stack). Singleton classes force a unique match and the
+/// search runs forward; only genuine symmetry causes branching.
+fn verify_iso(g: &Graph, dev_c: &[u64], net_c: &[u64]) -> Verify {
+    let (ndev, nnet) = (dev_c.len(), net_c.len());
+
+    // candidate B devices grouped by refined colour
+    let mut b_by_colour: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+    let mut a_devs: Vec<usize> = Vec::new();
+    for i in 0..ndev {
+        if g.dev_side[i] == 0 {
+            a_devs.push(i);
+        } else {
+            b_by_colour.entry(dev_c[i]).or_default().push(i);
+        }
+    }
+    // match the most-constrained devices first (fewest candidates) to fail fast
+    a_devs.sort_by_key(|&i| b_by_colour.get(&dev_c[i]).map_or(0, |v| v.len()));
+    let m = a_devs.len();
+    if m == 0 {
+        return Verify::Verified;
+    }
+
+    let mut net_map = vec![-1i64; nnet];
+    let mut rev_net = vec![-1i64; nnet];
+    let mut dev_used = vec![false; ndev];
+
+    // Seed forced net anchors: any colour class that is a singleton on both sides
+    // (supplies, ports, structurally-unique nets) has only one possible image.
+    {
+        let mut a_of: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+        let mut b_of: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+        for j in 0..nnet {
+            if g.net_side[j] == 0 {
+                a_of.entry(net_c[j]).or_default().push(j);
+            } else {
+                b_of.entry(net_c[j]).or_default().push(j);
+            }
+        }
+        for (col, av) in &a_of {
+            if av.len() == 1 {
+                if let Some(bv) = b_of.get(col) {
+                    if bv.len() == 1 {
+                        net_map[av[0]] = bv[0] as i64;
+                        rev_net[bv[0]] = av[0] as i64;
+                    }
+                }
+            }
+        }
+    }
+
+    struct Frame {
+        cands: Vec<usize>,
+        ci: usize,
+        oi: usize,
+        undo: Vec<usize>,
+        placed: i64,
+    }
+    let cand_list = |idx: usize| -> Vec<usize> {
+        b_by_colour.get(&dev_c[a_devs[idx]]).cloned().unwrap_or_default()
+    };
+
+    let mut budget = VERIFY_BUDGET;
+    let mut stack: Vec<Frame> = Vec::with_capacity(m);
+    stack.push(Frame { cands: cand_list(0), ci: 0, oi: 0, undo: vec![], placed: -1 });
+
+    loop {
+        if budget == 0 {
+            return Verify::Unresolved;
+        }
+        let idx = stack.len() - 1;
+        let da = a_devs[idx];
+        let mut fr = stack.pop().unwrap();
+
+        // roll back this frame's previous trial before trying the next option
+        if fr.placed >= 0 {
+            for &a in &fr.undo {
+                rev_net[net_map[a] as usize] = -1;
+                net_map[a] = -1;
+            }
+            fr.undo.clear();
+            dev_used[fr.placed as usize] = false;
+            fr.placed = -1;
+        }
+
+        // find the next viable (candidate device, orientation)
+        let mut advanced = false;
+        while fr.ci < fr.cands.len() {
+            let db = fr.cands[fr.ci];
+            let orients = orient_count(g.dev_kind[da], g.dev_terms[da].len());
+            let same_arity = g.dev_terms[da].len() == g.dev_terms[db].len();
+            while fr.oi < orients {
+                let o = fr.oi;
+                fr.oi += 1;
+                budget -= 1;
+                if budget == 0 {
+                    return Verify::Unresolved;
+                }
+                if dev_used[db] || !same_arity {
+                    break; // skip remaining orientations for an unusable candidate
+                }
+                let mut undo = Vec::new();
+                if assign_device(da, db, o, g, net_c, &mut net_map, &mut rev_net, &mut undo) {
+                    dev_used[db] = true;
+                    fr.placed = db as i64;
+                    fr.undo = undo;
+                    advanced = true;
+                    break;
+                }
+                for &a in &undo {
+                    rev_net[net_map[a] as usize] = -1;
+                    net_map[a] = -1;
+                }
+            }
+            if advanced {
+                break;
+            }
+            fr.ci += 1;
+            fr.oi = 0;
+        }
+
+        if advanced {
+            let last = idx + 1 == m;
+            stack.push(fr);
+            if last {
+                return Verify::Verified;
+            }
+            stack.push(Frame { cands: cand_list(idx + 1), ci: 0, oi: 0, undo: vec![], placed: -1 });
+        } else {
+            // dead end — drop this frame and let the parent try its next option
+            match stack.last_mut() {
+                Some(p) => {
+                    p.ci += 1;
+                    p.oi = 0;
+                }
+                None => return Verify::Refuted,
+            }
+        }
+    }
 }
 
 fn unbalanced(what: &'static str, colour: &[u64], side: &[u8], label: &[String]) -> Vec<Unbalanced> {
@@ -246,7 +550,33 @@ mod tests {
     fn identical_circuits_match() {
         let r = compare(&nl(INV_A), &nl(INV_B));
         assert!(r.matched, "renamed/reordered same circuit should MATCH: {r:?}");
+        assert!(r.verified, "MATCH should be confirmed by an explicit bijection: {r:?}");
         assert_eq!(r.a_devices, 2);
+    }
+
+    #[test]
+    fn refutes_1wl_false_match() {
+        // The textbook colour-refinement blind spot: a 6-ring vs two 3-rings are
+        // both 2-regular, so 1-WL alone calls them equivalent. They are NOT
+        // isomorphic — the explicit-bijection pass must refute the false MATCH.
+        let ring6 = "R0 n0 n1\nR1 n1 n2\nR2 n2 n3\nR3 n3 n4\nR4 n4 n5\nR5 n5 n0\n";
+        let two3 = "R0 m0 m1\nR1 m1 m2\nR2 m2 m0\nR3 m3 m4\nR4 m4 m5\nR5 m5 m3\n";
+        let r = compare(&nl(ring6), &nl(two3));
+        assert!(!r.matched, "6-ring vs two 3-rings must not MATCH");
+        assert!(
+            r.note.as_deref().unwrap_or("").contains("refuted"),
+            "should report a refuted 1-WL false MATCH, got {:?}",
+            r.note
+        );
+    }
+
+    #[test]
+    fn isomorphic_rings_verify() {
+        // a genuine match of the same symmetric structure still verifies
+        let a = "R0 n0 n1\nR1 n1 n2\nR2 n2 n0\n";
+        let b = "R0 m0 m1\nR1 m1 m2\nR2 m2 m0\n";
+        let r = compare(&nl(a), &nl(b));
+        assert!(r.matched && r.verified, "isomorphic triangles should verify: {r:?}");
     }
 
     #[test]
@@ -256,6 +586,54 @@ mod tests {
         let r = compare(&nl(INV_A), &nl(bad));
         assert!(!r.matched, "pfet->nfet swap must mismatch");
         assert!(!r.unbalanced.is_empty());
+    }
+
+    // Build N inverters all sharing VDD/VSS; `mutate` optionally rewires one gate.
+    fn bank(n: usize, mutate: bool) -> Netlist {
+        let mut s = String::from(".subckt bank VDD VSS\n");
+        for i in 0..n {
+            s += &format!("Mp{i} y{i} a{i} VDD VDD pfet\n");
+            let g = if mutate && i == 0 { 1 } else { i }; // plant ONE faulted gate net
+            s += &format!("Mn{i} y{i} a{g} VSS VSS nfet\n");
+        }
+        s += ".ends\n";
+        nl(&s)
+    }
+
+    #[test]
+    fn single_fault_stays_local_not_cascaded() {
+        // The regression Rob measured: one planted net fault on a supply-heavy
+        // netlist produced 255,103 "divergence classes" and never named the gate.
+        let good = bank(200, false);
+        let bad = bank(200, true);
+        let r = compare(&good, &bad);
+        assert!(!r.matched, "a rewired gate must MISMATCH");
+        // With supplies anchored the fault no longer cascades across the rail:
+        // only the handful of nets/devices around the change diverge.
+        assert!(
+            r.unbalanced.len() <= 12,
+            "fault should stay local, got {} divergence classes",
+            r.unbalanced.len()
+        );
+        // …and the offending neighbourhood (nets a0/a1/y0, gates Mp0/Mn0/Mp1) is
+        // named at the top of the report — not lost in a sea of cascaded classes.
+        let named: String = r
+            .unbalanced
+            .iter()
+            .flat_map(|u| u.a_examples.iter().chain(&u.b_examples))
+            .cloned()
+            .collect();
+        assert!(
+            ["a0", "a1", "y0", "Mp0", "Mn0", "Mp1"].iter().any(|t| named.contains(t)),
+            "the faulted neighbourhood should be named, got {named:?}"
+        );
+    }
+
+    #[test]
+    fn supply_heavy_equivalent_still_matches() {
+        // anchoring must not create false mismatches on a clean design
+        let r = compare(&bank(200, false), &bank(200, false));
+        assert!(r.matched, "identical supply-heavy banks must MATCH: {} classes", r.unbalanced.len());
     }
 
     #[test]

@@ -1,12 +1,21 @@
 //! Minimal SPICE netlist reader for LVS comparison.
 //!
-//! Parses a flat or single-`.subckt` netlist into typed devices (kind, instance
+//! Parses a flat or hierarchical netlist into typed devices (kind, instance
 //! name, ordered terminal nets, model/value). Handles `+` line continuation,
-//! `*`/`;`/`$` comments, `.subckt`/`.ends` scoping, and the common device kinds
-//! (M, Q, R, C, L, D, X). Other dot-commands are ignored. Case-insensitive.
+//! `*`/`;`/`$` comments, `.subckt`/`.ends` scoping, `.global`, and the common
+//! device kinds (M, Q, R, C, L, D, X). Other dot-commands are ignored.
+//! Case-insensitive.
 //!
-//! Depth reserved: hierarchical flattening of `X` subckt instances, inline `X`
-//! parameters, and `.param` evaluation.
+//! **Hierarchical flattening**: every `X` subckt instance whose definition is
+//! present is recursively expanded down to primitive devices — formal ports are
+//! bound to the actual nets at the call site, internal nets are uniquified by the
+//! instance path, and `.global` (plus SPICE node `0`) names stay global. This is
+//! what turns a cell-level connectivity check into a *transistor-level* compare:
+//! two layouts that instantiate the same cells but wire their internals
+//! differently now diverge. An `X` whose subckt is *not* defined degrades to an
+//! opaque device (its connectivity is still mapped through the hierarchy).
+//!
+//! Depth reserved: inline `X` parameters and `.param` evaluation.
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Device {
@@ -49,12 +58,16 @@ impl Netlist {
     }
 
     /// Parse `text`; if `top` is given, return that `.subckt`, else the named
-    /// single subckt, else the flat top-level devices.
+    /// single subckt, else the flat top-level devices. The chosen cell is
+    /// **flattened to primitive devices** against the full subckt table (see
+    /// [`flatten`]).
     pub fn parse(text: &str, top: Option<&str>) -> Result<Netlist, SpiceError> {
         let stmts = statements(text);
-        // collect subckts
+        // collect subckts + global nets
         let mut subckts: Vec<Netlist> = Vec::new();
         let mut flat: Vec<Device> = Vec::new();
+        let mut globals: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        globals.insert("0".into()); // SPICE global ground
         let mut cur: Option<Netlist> = None;
 
         for st in &stmts {
@@ -75,8 +88,12 @@ impl Netlist {
                 }
                 continue;
             }
+            if head == ".global" {
+                globals.extend(toks[1..].iter().map(|s| s.to_string()));
+                continue;
+            }
             if head.starts_with('.') {
-                continue; // .model/.param/.include/.global/.end/...
+                continue; // .model/.param/.include/.end/...
             }
             if let Some(dev) = parse_device(&toks)? {
                 match cur.as_mut() {
@@ -86,23 +103,99 @@ impl Netlist {
             }
         }
 
-        if let Some(want) = top {
-            return subckts
-                .into_iter()
-                .find(|s| s.name.eq_ignore_ascii_case(want))
-                .ok_or_else(|| SpiceError(format!("subckt {want:?} not found")));
+        // subckt-definition table (case-insensitive lookup by name)
+        let table: FlatMap<String, Netlist> =
+            subckts.iter().map(|s| (s.name.to_ascii_lowercase(), s.clone())).collect();
+
+        let chosen = if let Some(want) = top {
+            table
+                .get(&want.to_ascii_lowercase())
+                .cloned()
+                .ok_or_else(|| SpiceError(format!("subckt {want:?} not found")))?
+        } else {
+            match subckts.len() {
+                0 => Netlist { name: "(top)".into(), ports: Vec::new(), devices: flat },
+                1 => subckts.into_iter().next().unwrap(),
+                _ => {
+                    return Err(SpiceError(format!(
+                        "{} subckts; pass `top:` to choose ({})",
+                        subckts.len(),
+                        subckts.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")
+                    )))
+                }
+            }
+        };
+
+        Ok(flatten(&chosen, &table, &globals))
+    }
+}
+
+use std::collections::BTreeMap as FlatMap;
+
+/// Recursively expand the cell's `X` instances down to primitive devices.
+///
+/// At each level a node is resolved in the current namespace: a formal port maps
+/// to the actual net passed at the call site, a global stays itself, and any
+/// other (internal) net is prefixed with the instance path so two instances of
+/// the same cell get distinct internal nets. An `X` whose subckt is absent from
+/// `table` is emitted as an opaque device with its nodes mapped — connectivity is
+/// preserved even when the definition is unavailable.
+pub fn flatten(
+    top: &Netlist,
+    table: &FlatMap<String, Netlist>,
+    globals: &std::collections::BTreeSet<String>,
+) -> Netlist {
+    let mut out: Vec<Device> = Vec::new();
+    // current frame: formal->resolved-actual substitution + instance-path prefix
+    let resolve = |node: &str, subst: &FlatMap<String, String>, prefix: &str| -> String {
+        if let Some(actual) = subst.get(node) {
+            actual.clone()
+        } else if globals.contains(node) {
+            node.to_string()
+        } else {
+            format!("{prefix}{node}")
         }
-        match subckts.len() {
-            0 => Ok(Netlist { name: "(top)".into(), ports: Vec::new(), devices: flat }),
-            1 => Ok(subckts.into_iter().next().unwrap()),
-            _ => Err(SpiceError(format!(
-                "{} subckts; pass `top:` to choose ({})",
-                subckts.len(),
-                subckts.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")
-            ))),
+    };
+    // explicit recursion guarded by depth; globals/ports captured in `resolve`
+    expand(top, table, &FlatMap::new(), "", 0, &resolve, &mut out);
+    Netlist { name: top.name.clone(), ports: top.ports.clone(), devices: out }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn expand(
+    cell: &Netlist,
+    table: &FlatMap<String, Netlist>,
+    subst: &FlatMap<String, String>,
+    prefix: &str,
+    depth: usize,
+    resolve: &dyn Fn(&str, &FlatMap<String, String>, &str) -> String,
+    out: &mut Vec<Device>,
+) {
+    for d in &cell.devices {
+        let nodes: Vec<String> = d.nodes.iter().map(|n| resolve(n, subst, prefix)).collect();
+        let sub = (d.kind == 'X')
+            .then(|| table.get(&d.model.to_ascii_lowercase()))
+            .flatten();
+        match sub {
+            Some(def) if depth < MAX_HIER_DEPTH && def.ports.len() == nodes.len() => {
+                // bind formals -> resolved actuals; recurse into the child namespace
+                let child_subst: FlatMap<String, String> =
+                    def.ports.iter().cloned().zip(nodes.iter().cloned()).collect();
+                let child_prefix = format!("{prefix}{}/", d.name);
+                expand(def, table, &child_subst, &child_prefix, depth + 1, resolve, out);
+            }
+            _ => out.push(Device {
+                kind: d.kind,
+                name: format!("{prefix}{}", d.name),
+                nodes,
+                model: d.model.clone(),
+            }),
         }
     }
 }
+
+/// Recursion guard — a malformed self-referential subckt won't expand forever.
+const MAX_HIER_DEPTH: usize = 100;
 
 fn parse_device(toks: &[&str]) -> Result<Option<Device>, SpiceError> {
     let name = toks[0].to_string();
@@ -186,5 +279,69 @@ Mn Y A VSS VSS nfet w=0.5 l=0.15
         assert_eq!(n.devices.len(), 2);
         assert_eq!(n.devices[0].nodes, ["a", "b"]);
         assert_eq!(n.devices[0].model, "1k");
+    }
+
+    const HIER: &str = "\
+.subckt inv A Y VDD VSS
+Mp Y A VDD VDD pfet
+Mn Y A VSS VSS nfet
+.ends
+.subckt buf A Y VDD VSS
+Xi1 A M VDD VSS inv
+Xi2 M Y VDD VSS inv
+.ends
+";
+
+    #[test]
+    fn flattens_to_transistors() {
+        let n = Netlist::parse(HIER, Some("buf")).unwrap();
+        // two inverters expand to four MOSFETs; no X survives
+        assert_eq!(n.devices.len(), 4);
+        assert!(n.devices.iter().all(|d| d.kind == 'M'));
+        // ports stay at the boundary; the internal node M is shared between the
+        // two instances (passed as an actual), not path-prefixed
+        let nets: std::collections::BTreeSet<&str> =
+            n.devices.iter().flat_map(|d| d.nodes.iter().map(|s| s.as_str())).collect();
+        assert!(nets.contains("M"), "shared internal net M should survive: {nets:?}");
+        assert!(nets.contains("VDD") && nets.contains("VSS"));
+        // the inverter's own internal nodes (none here) would be path-prefixed;
+        // instance device names are path-qualified and unique
+        let names: std::collections::BTreeSet<&str> =
+            n.devices.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names.len(), 4, "instance device names must be unique: {names:?}");
+    }
+
+    #[test]
+    fn internal_wiring_difference_is_visible_after_flatten() {
+        use crate::compare::compare;
+        // same cells, but the schematic chains inv->inv where the layout shorts
+        // both inputs to A — a real connectivity bug a cell-level check misses.
+        let bad = "\
+.subckt inv A Y VDD VSS
+Mp Y A VDD VDD pfet
+Mn Y A VSS VSS nfet
+.ends
+.subckt buf A Y VDD VSS
+Xi1 A M VDD VSS inv
+Xi2 A Y VDD VSS inv
+.ends
+";
+        let good = Netlist::parse(HIER, Some("buf")).unwrap();
+        let broken = Netlist::parse(bad, Some("buf")).unwrap();
+        let r = compare(&good, &broken);
+        assert!(!r.matched, "miswired internal net must MISMATCH at transistor level");
+    }
+
+    #[test]
+    fn undefined_subckt_stays_opaque() {
+        let t = "\
+.subckt top A Y VDD VSS
+Xb A Y VDD VSS blackbox
+.ends
+";
+        let n = Netlist::parse(t, Some("top")).unwrap();
+        assert_eq!(n.devices.len(), 1);
+        assert_eq!(n.devices[0].kind, 'X');
+        assert_eq!(n.devices[0].nodes, ["A", "Y", "VDD", "VSS"]);
     }
 }

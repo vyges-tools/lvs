@@ -50,7 +50,18 @@ pub fn render_report(r: &LvsResult) -> String {
         s.push_str(&format!("  device count differs: '{k}'  layout {a}  schematic {b}\n"));
     }
     if r.matched {
-        s.push_str("\n  the two netlists are structurally equivalent.\n");
+        if r.verified {
+            s.push_str("\n  the two netlists are structurally equivalent (verified by explicit isomorphism).\n");
+        } else {
+            s.push_str("\n  the two netlists are structurally equivalent.\n");
+            if let Some(n) = &r.note {
+                s.push_str(&format!("  note: {n}\n"));
+            }
+        }
+        return s;
+    }
+    if let Some(n) = &r.note {
+        s.push_str(&format!("\n  {n}\n"));
         return s;
     }
     s.push_str("\n  divergence (unmatched refinement classes):\n");
@@ -74,6 +85,10 @@ pub fn report_json(r: &LvsResult) -> String {
     let mut s = String::new();
     s.push_str("{\n");
     s.push_str(&format!("  \"matched\": {},\n", r.matched));
+    s.push_str(&format!("  \"verified\": {},\n", r.verified));
+    if let Some(n) = &r.note {
+        s.push_str(&format!("  \"note\": {},\n", jstr(n)));
+    }
     s.push_str(&format!("  \"a_devices\": {}, \"b_devices\": {},\n", r.a_devices, r.b_devices));
     s.push_str(&format!("  \"a_nets\": {}, \"b_nets\": {},\n", r.a_nets, r.b_nets));
     s.push_str(&format!("  \"iterations\": {},\n", r.iterations));
