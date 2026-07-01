@@ -552,7 +552,7 @@ pub fn extract(lib: &Library, top: Option<&str>, rules: &Rules) -> Result<Netlis
 }
 
 pub fn extract_file(gds: &str, top: Option<&str>, rules: &Rules) -> Result<Netlist, String> {
-    let lib = Library::load(gds).map_err(|e| e.to_string())?;
+    let lib = Library::load_any(gds)?;
     extract(&lib, top, rules)
 }
 

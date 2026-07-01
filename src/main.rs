@@ -27,7 +27,7 @@ A JOB is a small declarative `.lvs` file: the layout side as a SPICE netlist
 (`layout:`) OR a GDS to extract natively (`layout_gds:` + `rules:`), plus the
 `schematic:` and an optional `top:`. The compare is name-independent (graph
 colour-refinement); a mismatch reports the unmatched device/net classes.
-`extract` runs native device extraction (GDS -> SPICE) on its own.
+`extract` runs native device extraction (GDS/OASIS -> SPICE) on its own.
 
 flags:
   -o FILE              write the report to FILE (default: stdout)
