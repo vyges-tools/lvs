@@ -141,6 +141,23 @@ fn emit(r: &LvsResult, cli: &Cli) -> ! {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--describe") {
+        // Machine-readable description of `run` for tooling that drives it.
+        const DESCRIBE: &str = r#"{
+  "name": "lvs",
+  "summary": "layout-vs-schematic comparison (job → report)",
+  "invocation": { "args_template": ["run", "{job}"], "emits_json": true },
+  "inputs": {
+    "type": "object",
+    "required": ["job"],
+    "properties": { "job": { "type": "string", "description": "the LVS job file" } }
+  },
+  "artifacts": []
+}
+"#;
+        print!("{DESCRIBE}");
+        return;
+    }
     let cli = parse_cli(&args);
 
     if cli.bug_report {
