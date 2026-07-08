@@ -84,19 +84,29 @@ struct Cli {
 /// Resolve a PDK collateral key (e.g. `extract_rules`) to a concrete path via the
 /// installed `vyges-pdk-store` resolver — the PDK adapter. Prefers the sibling
 /// binary next to this one, else falls back to PATH. Returns None if unavailable.
-fn pdk_resolve(pdk: &str, key: &str) -> Option<String> {
+/// On failure returns the resolver's own message (e.g. `"foo": not a known PDK —
+/// run list…`) so the caller can surface it instead of a generic usage error.
+fn pdk_resolve(pdk: &str, key: &str) -> Result<String, String> {
     let sibling = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("vyges-pdk-store")))
         .filter(|p| p.exists())
         .map(|p| p.to_string_lossy().into_owned());
     let prog = sibling.unwrap_or_else(|| "vyges-pdk-store".into());
-    let out = std::process::Command::new(prog).args(["resolve", pdk, key]).output().ok()?;
+    let out = std::process::Command::new(prog)
+        .args(["resolve", pdk, key])
+        .output()
+        .map_err(|e| format!("vyges-pdk-store not runnable: {e}"))?;
     if !out.status.success() {
-        return None;
+        let err = String::from_utf8_lossy(&out.stderr).trim().trim_start_matches("error:").trim().to_string();
+        return Err(if err.is_empty() { format!("could not resolve {key} for PDK {pdk:?}") } else { err });
     }
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!s.is_empty()).then_some(s)
+    if s.is_empty() {
+        Err(format!("pdk-store returned no path for {key} of PDK {pdk:?}"))
+    } else {
+        Ok(s)
+    }
 }
 
 fn parse_cli(args: &[String]) -> Cli {
@@ -218,8 +228,17 @@ fn main() {
                 exit(2);
             };
             // rules come from --rules, else are resolved from --pdk via pdk-store
-            let resolved = cli.rules.clone().or_else(|| cli.pdk.as_deref().and_then(|p| pdk_resolve(p, "extract_rules")));
-            let Some(rules_path) = resolved else {
+            let rules_path = if let Some(r) = &cli.rules {
+                r.clone()
+            } else if let Some(p) = &cli.pdk {
+                match pdk_resolve(p, "extract_rules") {
+                    Ok(path) => path,
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        exit(2);
+                    }
+                }
+            } else {
                 eprintln!("usage: vyges-lvs extract GDS (--rules RULES | --pdk NAME)");
                 exit(2);
             };
@@ -284,7 +303,13 @@ fn main() {
             // `pdk:` (or --pdk) via pdk-store — so a job can name a PDK, not a path.
             if job.rules.is_none() && job.layout_gds.is_some() {
                 if let Some(p) = job.pdk.clone().or_else(|| cli.pdk.clone()) {
-                    job.rules = pdk_resolve(&p, "extract_rules");
+                    match pdk_resolve(&p, "extract_rules") {
+                        Ok(path) => job.rules = Some(path),
+                        Err(e) => {
+                            eprintln!("error: {e}");
+                            exit(2);
+                        }
+                    }
                 }
             }
             if cli.verbose {
