@@ -1,0 +1,31 @@
+# sky130A device-extraction rules for vyges-lvs native GDS->SPICE extraction.
+# layer/datatype numbers: open_pdks sky130A GDS (klayout sky130A.lyp).
+# active/poly/nwell are auto-added to connectivity by the engine; `conn` lists
+# the routing layers (plus tap so well/substrate ties reach the rails).
+
+# --- device layers ---
+active: 65/20     # diff (source/drain diffusion)
+poly:   66/20     # poly (gate)
+nwell:  64/20     # nwell (pfet bulk / well tie)
+
+# --- connective (routing) layers ---
+conn: 67/20, 68/20, 69/20, 70/20, 71/20, 72/20, 65/44   # li1, met1..met5, tap
+
+# --- net-name TEXT label layers (top-cell labels become ports) ---
+label: 67/5, 68/5, 69/5, 70/5, 71/5, 72/5
+
+# --- nfet bulk (substrate) global net + FET models ---
+substrate: VGND
+nfet: sky130_fd_pr__nfet_01v8
+pfet: sky130_fd_pr__pfet_01v8
+pfet_variant: 78/44 sky130_fd_pr__pfet_01v8_hvt         # hvtp implant -> high-Vt
+
+# --- contacts/vias: <contact L/D> <layerA> <layerB> ---
+contact: 66/44 66/20 67/20     # licon: poly -> li1
+contact: 66/44 65/20 67/20     # licon: diff -> li1
+contact: 66/44 65/44 67/20     # licon: tap  -> li1
+contact: 67/44 67/20 68/20     # mcon: li1  -> met1
+contact: 68/44 68/20 69/20     # via:  met1 -> met2
+contact: 69/44 69/20 70/20     # via2: met2 -> met3
+contact: 70/44 70/20 71/20     # via3: met3 -> met4
+contact: 71/44 71/20 72/20     # via4: met4 -> met5

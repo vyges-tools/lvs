@@ -364,8 +364,13 @@ pub fn extract(lib: &Library, top: Option<&str>, rules: &Rules) -> Result<Netlis
     // --- connectivity primitives (same-layer touching shapes already merged) ---
     let mut prims: Vec<Prim> = Vec::new();
     let mut conn = rules.conn.clone();
-    if !conn.contains(&rules.nwell) {
-        conn.push(rules.nwell); // wells participate in net tracing (taps -> a rail)
+    // The device layers (active, poly) and the well must form prims for channels to
+    // find their gate/source/drain — auto-add them so a ruleset that lists only the
+    // routing layers in `conn` can't silently extract 0 devices.
+    for extra in [rules.nwell, rules.active, rules.poly] {
+        if !conn.contains(&extra) {
+            conn.push(extra);
+        }
     }
     for &cl in &conn {
         if cl == rules.active {
@@ -425,9 +430,14 @@ pub fn extract(lib: &Library, top: Option<&str>, rules: &Rules) -> Result<Netlis
         .collect();
     let nnets = canon.len();
 
-    // names from TEXT labels -> labelled nets are ports
+    // names from TEXT labels -> labelled nets are ports. Read labels ONLY from the
+    // ORIGINAL top cell (`base`), never the flattened `cell`: after flattening a
+    // hierarchical layout, every standard cell's internal pin label (A/Y/CLK/…) would
+    // otherwise be promoted to a top-level port and swamp the real boundary pins. The
+    // top cell's own labels are exactly the block's ports (internal nets stay `nX`,
+    // which is fine — the comparator is name-independent).
     let mut name: Vec<Option<String>> = vec![None; nnets];
-    for el in &cell.elements {
+    for el in &base.elements {
         if let Element::Text { layer, texttype, x, y, string } = el {
             if rules.label.contains(&(*layer, *texttype)) {
                 // prefer a prim on the label's own base layer (e.g. an nwell label →
