@@ -7,6 +7,14 @@
 //! schematic: block_schematic.spice   # the reference/schematic netlist (side B)
 //! top:       block                   # subckt to compare (optional; else top-level)
 //! ```
+//!
+//! For native extraction the layout side may instead be a GDS plus rules:
+//!
+//! ```text
+//! layout_gds: block.gds              # extract this natively (side A)
+//! pdk:        sky130a                # resolve extraction rules from pdk-store …
+//! rules:      sky130.rules           # … or point at a rules file directly
+//! ```
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -16,6 +24,7 @@ pub struct LvsJob {
     pub layout: Option<String>,     // layout-extracted SPICE netlist (side A)
     pub layout_gds: Option<String>, // OR a GDS to extract natively (needs `rules`)
     pub rules: Option<String>,      // extraction rules for `layout_gds`
+    pub pdk: Option<String>,        // OR a pdk-store name whose `extract_rules` supplies `rules`
     pub schematic: String,
     pub top: Option<String>,
     pub base_dir: String,
@@ -53,6 +62,7 @@ impl LvsJob {
             layout,
             layout_gds,
             rules: kv.get("rules").filter(|s| !s.is_empty()).cloned(),
+            pdk: kv.get("pdk").filter(|s| !s.is_empty()).cloned(),
             schematic: get("schematic")?,
             top: kv.get("top").filter(|s| !s.is_empty()).cloned(),
             base_dir: base_dir.to_string(),

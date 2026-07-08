@@ -19,17 +19,21 @@ vyges-lvs — layout-vs-schematic netlist comparison with clear divergence diagn
 
 usage:
   vyges-lvs run     JOB [-o OUT] [--json] [--fail-on-mismatch]
-  vyges-lvs extract GDS --rules RULES [--top CELL] [-o out.spice]
+  vyges-lvs extract GDS (--rules RULES | --pdk NAME) [--top CELL] [-o out.spice]
   vyges-lvs check   JOB
   vyges-lvs demo         [-o OUT] [--json]
 
 A JOB is a small declarative `.lvs` file: the layout side as a SPICE netlist
-(`layout:`) OR a GDS to extract natively (`layout_gds:` + `rules:`), plus the
-`schematic:` and an optional `top:`. The compare is name-independent (graph
+(`layout:`) OR a GDS to extract natively (`layout_gds:` + `rules:`/`pdk:`), plus
+the `schematic:` and an optional `top:`. The compare is name-independent (graph
 colour-refinement); a mismatch reports the unmatched device/net classes.
 `extract` runs native device extraction (GDS/OASIS -> SPICE) on its own.
 
+Extraction rules come from `--rules`/`rules:` directly, or are resolved from a
+PDK by `--pdk`/`pdk:` NAME via the installed pdk-store (its `extract_rules`).
+
 flags:
+  --pdk NAME           resolve extraction rules from pdk-store (vs --rules)
   -o FILE              write the report to FILE (default: stdout)
   --json               machine-readable JSON instead of the text report
   --fail-on-mismatch   exit 3 if the netlists are not equivalent (CI gate)
@@ -73,7 +77,26 @@ struct Cli {
     sponsor: bool,
     star: bool,
     rules: Option<String>,
+    pdk: Option<String>,
     top: Option<String>,
+}
+
+/// Resolve a PDK collateral key (e.g. `extract_rules`) to a concrete path via the
+/// installed `vyges-pdk-store` resolver — the PDK adapter. Prefers the sibling
+/// binary next to this one, else falls back to PATH. Returns None if unavailable.
+fn pdk_resolve(pdk: &str, key: &str) -> Option<String> {
+    let sibling = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("vyges-pdk-store")))
+        .filter(|p| p.exists())
+        .map(|p| p.to_string_lossy().into_owned());
+    let prog = sibling.unwrap_or_else(|| "vyges-pdk-store".into());
+    let out = std::process::Command::new(prog).args(["resolve", pdk, key]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!s.is_empty()).then_some(s)
 }
 
 fn parse_cli(args: &[String]) -> Cli {
@@ -87,6 +110,10 @@ fn parse_cli(args: &[String]) -> Cli {
             }
             "--rules" => {
                 c.rules = args.get(i + 1).cloned();
+                i += 1;
+            }
+            "--pdk" => {
+                c.pdk = args.get(i + 1).cloned();
                 i += 1;
             }
             "--top" => {
@@ -190,11 +217,13 @@ fn main() {
                 eprintln!("usage: vyges-lvs extract GDS --rules RULES [--top CELL] [-o out.spice]");
                 exit(2);
             };
-            let Some(rules_path) = &cli.rules else {
-                eprintln!("usage: vyges-lvs extract GDS --rules RULES");
+            // rules come from --rules, else are resolved from --pdk via pdk-store
+            let resolved = cli.rules.clone().or_else(|| cli.pdk.as_deref().and_then(|p| pdk_resolve(p, "extract_rules")));
+            let Some(rules_path) = resolved else {
+                eprintln!("usage: vyges-lvs extract GDS (--rules RULES | --pdk NAME)");
                 exit(2);
             };
-            let rules = match vyges_lvs::extract::Rules::load(rules_path) {
+            let rules = match vyges_lvs::extract::Rules::load(&rules_path) {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("error: {e}");
@@ -244,13 +273,20 @@ fn main() {
                 eprintln!("usage: vyges-lvs run JOB [-o OUT]");
                 exit(2);
             };
-            let job = match LvsJob::load(path) {
+            let mut job = match LvsJob::load(path) {
                 Ok(j) => j,
                 Err(e) => {
                     eprintln!("error: {e}");
                     exit(2);
                 }
             };
+            // native extraction needs `rules`; if absent, resolve from the job's
+            // `pdk:` (or --pdk) via pdk-store — so a job can name a PDK, not a path.
+            if job.rules.is_none() && job.layout_gds.is_some() {
+                if let Some(p) = job.pdk.clone().or_else(|| cli.pdk.clone()) {
+                    job.rules = pdk_resolve(&p, "extract_rules");
+                }
+            }
             if cli.verbose {
                 let src = job.layout_gds.as_deref().or(job.layout.as_deref()).unwrap_or("?");
                 eprintln!("comparing {} vs {}", src, job.schematic);
