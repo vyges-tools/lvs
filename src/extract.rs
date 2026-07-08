@@ -40,6 +40,9 @@ pub struct Rules {
     // the base (e.g. hvtp 78/44 → *_hvt). First match wins.
     pub nfet_variants: Vec<(Ld, String)>,
     pub pfet_variants: Vec<(Ld, String)>,
+    // cell-name substrings whose instances are physical-only (fill/decap/tap/diode)
+    // and carry no logical devices — dropped before extraction so LVS ignores them.
+    pub ignore_cells: Vec<String>,
 }
 
 fn parse_ld(s: &str) -> Result<Ld, String> {
@@ -87,6 +90,10 @@ impl Rules {
             pfet: kv.get("pfet").cloned().unwrap_or_else(|| "pfet".into()),
             nfet_variants,
             pfet_variants,
+            ignore_cells: kv
+                .get("ignore")
+                .map(|v| v.replace(',', " ").split_whitespace().map(|s| s.to_string()).collect())
+                .unwrap_or_default(),
         })
     }
     pub fn load(path: &str) -> Result<Rules, String> {
@@ -345,6 +352,25 @@ pub fn extract(lib: &Library, top: Option<&str>, rules: &Rules) -> Result<Netlis
     };
     // flatten hierarchy (SREF/AREF cell instances + arrays) before extraction
     let has_refs = base.elements.iter().any(|e| matches!(e, Element::Sref { .. } | Element::Aref { .. }));
+    // Gap B: drop physical-only cell instances (fill/decap/tap/diode — no logical
+    // devices) before flattening, so their transistors/caps never enter the netlist
+    // and LVS matches the logical design. Name-substring match on the ignore list.
+    let filtered;
+    let lib: &Library = if !rules.ignore_cells.is_empty() && has_refs {
+        let mut l = lib.clone();
+        if let Some(c) = l.cells.iter_mut().find(|c| c.name == base.name) {
+            c.elements.retain(|e| match e {
+                Element::Sref { sname, .. } | Element::Aref { sname, .. } => {
+                    !rules.ignore_cells.iter().any(|pat| sname.contains(pat.as_str()))
+                }
+                _ => true,
+            });
+        }
+        filtered = l;
+        &filtered
+    } else {
+        lib
+    };
     let flat = if has_refs { Some(crate::layout::flatten::flatten(lib, &base.name)?) } else { None };
     let cell: &Cell = flat.as_ref().unwrap_or(base);
 

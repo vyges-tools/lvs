@@ -14,6 +14,9 @@ conn: 67/20, 68/20, 69/20, 70/20, 71/20, 72/20, 65/44   # li1, met1..met5, tap
 # --- net-name TEXT label layers (top-cell labels become ports) ---
 label: 67/5, 68/5, 69/5, 70/5, 71/5, 72/5
 
+# --- physical-only cells (no logical devices) to drop before extraction ---
+ignore: fill decap tapvpwrvgnd diode
+
 # --- nfet bulk (substrate) global net + FET models ---
 substrate: VGND
 nfet: sky130_fd_pr__nfet_01v8
