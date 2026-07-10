@@ -15,6 +15,12 @@
 //! differently now diverge. An `X` whose subckt is *not* defined degrades to an
 //! opaque device (its connectivity is still mapped through the hierarchy).
 //!
+//! **PDK device recognition**: an `X` instance whose model is a device (a
+//! transistor/diode/BJT model, e.g. `sky130_fd_pr__nfet_01v8`) is treated as that
+//! primitive device kind, *not* descended into — so an extracted layout (magic
+//! writes every transistor as `X.. d g s b <model> w=.. l=..`) compares identically
+//! to a schematic that writes the same transistor as `M`. See [`recognize_device_kind`].
+//!
 //! Device **parameters** (MOSFET `w`/`l`/`nf`/`m`, and the value of an `R`/`C`/`L`)
 //! are captured too, so the comparator can check them — a layout that matches
 //! topologically but draws a transistor at the wrong width is a real LVS error.
@@ -237,6 +243,23 @@ fn expand(
 ) {
     for d in &cell.devices {
         let nodes: Vec<String> = d.nodes.iter().map(|n| resolve(n, subst, prefix)).collect();
+        // A subckt instance whose model is a PDK **device** (a transistor/diode/BJT,
+        // not a hierarchical cell) is a primitive, not a hierarchy to descend into:
+        // emit it as that device kind so it compares identically to the schematic's
+        // `M`/`D`/`Q` form. This also stops us from flattening a device subckt's
+        // parasitic internals (the `d g s b` MOSFET vs its diode-laden model body).
+        if d.kind == 'X' {
+            if let Some(k) = recognize_device_kind(&d.model, nodes.len()) {
+                out.push(Device {
+                    kind: k,
+                    name: format!("{prefix}{}", d.name),
+                    nodes,
+                    model: d.model.clone(),
+                    params: d.params.clone(),
+                });
+                continue;
+            }
+        }
         let sub = (d.kind == 'X')
             .then(|| table.get(&d.model.to_ascii_lowercase()))
             .flatten();
@@ -262,17 +285,58 @@ fn expand(
 /// Recursion guard — a malformed self-referential subckt won't expand forever.
 const MAX_HIER_DEPTH: usize = 100;
 
+/// Recognize a subckt instance whose model is a PDK **device** — a transistor,
+/// diode, or BJT — rather than a hierarchical cell, so it compares as the primitive
+/// device a schematic writes directly (`M`/`D`/`Q`). Most PDKs wrap each device in a
+/// model subckt: magic's `ext2spice` emits every transistor as
+/// `X.. d g s b sky130_fd_pr__nfet_01v8 w=.. l=..`, while a gate-level netlist writes
+/// the same transistor as `M`. Without this, every transistor in an extracted layout
+/// is an opaque `X` that can never match its `M` counterpart — the whole device
+/// population diverges. Matched by the near-universal device-model substrings, gated
+/// by terminal count so a hierarchical cell (more ports, `_sc_`/`_lib_` names) is
+/// never mistaken for a device. Returns the primitive device kind.
+fn recognize_device_kind(model: &str, n_nodes: usize) -> Option<char> {
+    let m = model.to_ascii_lowercase();
+    let has = |p: &str| m.contains(p);
+    match n_nodes {
+        // MOSFET: drain gate source bulk
+        4 if has("nfet") || has("pfet") || has("mosfet") || has("nmos") || has("pmos") => Some('M'),
+        // BJT: collector base emitter
+        3 if has("_npn") || has("_pnp") || has("bjt") => Some('Q'),
+        // diode: anode cathode
+        2 if has("diode") => Some('D'),
+        _ => None,
+    }
+}
+
 fn parse_device(toks: &[&str]) -> Result<Option<Device>, SpiceError> {
     let name = toks[0].to_string();
     let kind = name.chars().next().unwrap_or('?').to_ascii_uppercase();
     if kind == 'X' {
-        // Xname n1 .. nk subcktname  (inline params after the name are not handled)
-        if toks.len() < 3 {
-            return Ok(None);
+        // Xname n1 .. nk subcktname [p=v ...]
+        // Split off trailing `key=value` params (device geometry: w/l/ad/pd/as/ps/…);
+        // of the remaining bare tokens the **last** is the subckt/model name and the
+        // rest are the terminal nets. Magic's `ext2spice` writes each transistor this
+        // way (`X.. d g s b sky130_fd_pr__nfet_01v8 w=.. l=..`), so the params must not
+        // be mistaken for the model, nor the model/params for nets.
+        let mut params: BTreeMap<String, f64> = BTreeMap::new();
+        let mut bare: Vec<&str> = Vec::new();
+        for tok in &toks[1..] {
+            match tok.split_once('=') {
+                Some((k, v)) => {
+                    if let Some(n) = parse_spice_num(v) {
+                        params.insert(k.to_ascii_lowercase(), n);
+                    }
+                }
+                None => bare.push(tok),
+            }
         }
-        let model = toks[toks.len() - 1].to_string();
-        let nodes = toks[1..toks.len() - 1].iter().map(|s| s.to_string()).collect();
-        return Ok(Some(Device { kind, name, nodes, model, params: BTreeMap::new() }));
+        if bare.len() < 2 {
+            return Ok(None); // need at least one terminal + a subckt name
+        }
+        let model = bare[bare.len() - 1].to_string();
+        let nodes = bare[..bare.len() - 1].iter().map(|s| s.to_string()).collect();
+        return Ok(Some(Device { kind, name, nodes, model, params }));
     }
     let Some(nt) = fixed_terms(kind) else {
         return Ok(None); // unknown device kind -> skip (don't guess connectivity)
@@ -450,6 +514,67 @@ Xi2 A Y VDD VSS inv
         let broken = Netlist::parse(bad, Some("buf")).unwrap();
         let r = compare(&good, &broken);
         assert!(!r.matched, "miswired internal net must MISMATCH at transistor level");
+    }
+
+    #[test]
+    fn x_device_with_trailing_params_parses_model_and_nets() {
+        // magic ext2spice form: X<name> d g s b <model> <geom params>. The model is
+        // the last *bare* token; the params must not be folded into the node list.
+        let t = "\
+.subckt c d g s VPWR VGND VPB VNB
+X0 d g s VNB sky130_fd_pr__nfet_01v8 ad=0.044 pd=0.63 w=0.42 l=0.15
+.ends
+";
+        let n = Netlist::parse(t, Some("c")).unwrap();
+        assert_eq!(n.devices.len(), 1);
+        let dev = &n.devices[0];
+        assert_eq!(dev.kind, 'M', "an nfet device model must be recognized as a MOSFET");
+        assert_eq!(dev.model, "sky130_fd_pr__nfet_01v8");
+        assert_eq!(dev.nodes, ["d", "g", "s", "VNB"], "4 terminals, no model/params leaking in");
+        assert!((dev.params.get("w").copied().unwrap() - 0.42).abs() < 1e-12);
+        assert!((dev.params.get("l").copied().unwrap() - 0.15).abs() < 1e-12);
+    }
+
+    #[test]
+    fn extracted_x_transistor_matches_schematic_m_transistor() {
+        use crate::compare::compare;
+        // The real box divergence: the layout (magic) writes transistors as `X`
+        // device-model instances; the schematic (gate netlist) writes them as `M`.
+        // With device recognition the two forms must MATCH.
+        let layout = "\
+.subckt inv A Y VPWR VGND VPB VNB
+X0 Y A VPWR VPB sky130_fd_pr__pfet_01v8 w=1 l=0.15
+X1 Y A VGND VNB sky130_fd_pr__nfet_01v8 w=0.65 l=0.15
+.ends
+";
+        let schem = "\
+.subckt inv A Y VPWR VGND VPB VNB
+M0 Y A VPWR VPB sky130_fd_pr__pfet_01v8 w=1 l=0.15
+M1 Y A VGND VNB sky130_fd_pr__nfet_01v8 w=0.65 l=0.15
+.ends
+";
+        let r = compare(&Netlist::parse(layout, Some("inv")).unwrap(),
+                        &Netlist::parse(schem, Some("inv")).unwrap());
+        assert!(r.matched && r.verified, "X-device layout must match M-device schematic: {r:?}");
+        assert_eq!((r.a_devices, r.b_devices), (2, 2));
+    }
+
+    #[test]
+    fn hierarchical_cell_is_not_mistaken_for_a_device() {
+        // a std-cell subckt call (defined, many ports, no fet/mos in its name) must
+        // still flatten normally, not be swallowed as a "device".
+        let t = "\
+.subckt inv A Y VPWR VGND VPB VNB
+X0 Y A VPWR VPB sky130_fd_pr__pfet_01v8 w=1 l=0.15
+X1 Y A VGND VNB sky130_fd_pr__nfet_01v8 w=0.65 l=0.15
+.ends
+.subckt top A Y VPWR VGND VPB VNB
+Xu0 A Y VPWR VGND VPB VNB inv
+.ends
+";
+        let n = Netlist::parse(t, Some("top")).unwrap();
+        assert_eq!(n.devices.len(), 2, "the cell expands to its two transistors");
+        assert!(n.devices.iter().all(|d| d.kind == 'M'));
     }
 
     #[test]
