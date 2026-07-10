@@ -168,7 +168,7 @@ fn main() {
     "required": ["job"],
     "properties": { "job": { "type": "string", "description": "the LVS job file" } }
   },
-  "artifacts": []
+  "artifacts": [ { "role": "lvs_report" } ]
 }
 "#;
         print!("{DESCRIBE}");
