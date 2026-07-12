@@ -13,6 +13,8 @@ repository = "https://github.com/vyges-tools/lvs"
 # dep in dev; release pins a git/version dep.
 [dependencies]
 vyges-layout = { git = "https://github.com/vyges-tools/layout", branch = "main" }
+# The SPICE netlist reader lives in the shared vyges-loom foundation.
+vyges-loom = { git = "https://github.com/vyges-tools/loom", branch = "main" }
 # Structured events (vyges-events/1.0) for the MCP causal trail. Core-only.
 vyges-events = { git = "https://github.com/vyges-tools/events", branch = "main", default-features = false }
 

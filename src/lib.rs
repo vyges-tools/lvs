@@ -19,7 +19,10 @@
 //! source/drain (and other terminal) symmetry, series/parallel device folding, and
 //! native layout extraction (GDS → devices, via `vyges-layout`).
 
-pub mod spice;
+// The SPICE netlist reader now lives in the shared vyges-loom foundation (next to the
+// gate-level readers), re-exported so `crate::spice::{Device, Netlist, flatten}` keeps
+// resolving across the engine.
+pub use vyges_loom::spice;
 pub mod compare;
 pub mod job;
 pub mod engine;

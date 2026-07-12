@@ -1125,4 +1125,55 @@ mod tests {
         assert!(!r.matched);
         assert_eq!((r.a_devices, r.b_devices), (2, 1));
     }
+
+    // These exercise the SPICE reader (now vyges_loom::spice) THROUGH compare — the
+    // reader's own parser tests live in loom; the compare-level checks stay here.
+    #[test]
+    fn internal_wiring_difference_is_visible_after_flatten() {
+        let good = "\
+.subckt inv A Y VDD VSS
+Mp Y A VDD VDD pfet
+Mn Y A VSS VSS nfet
+.ends
+.subckt buf A Y VDD VSS
+Xi1 A M VDD VSS inv
+Xi2 M Y VDD VSS inv
+.ends
+";
+        let bad = "\
+.subckt inv A Y VDD VSS
+Mp Y A VDD VDD pfet
+Mn Y A VSS VSS nfet
+.ends
+.subckt buf A Y VDD VSS
+Xi1 A M VDD VSS inv
+Xi2 A Y VDD VSS inv
+.ends
+";
+        let g = Netlist::parse(good, Some("buf")).unwrap();
+        let b = Netlist::parse(bad, Some("buf")).unwrap();
+        assert!(!compare(&g, &b).matched, "miswired internal net must MISMATCH at transistor level");
+    }
+
+    #[test]
+    fn extracted_x_transistor_matches_schematic_m_transistor() {
+        let layout = "\
+.subckt inv A Y VPWR VGND VPB VNB
+X0 Y A VPWR VPB sky130_fd_pr__pfet_01v8 w=1 l=0.15
+X1 Y A VGND VNB sky130_fd_pr__nfet_01v8 w=0.65 l=0.15
+.ends
+";
+        let schem = "\
+.subckt inv A Y VPWR VGND VPB VNB
+M0 Y A VPWR VPB sky130_fd_pr__pfet_01v8 w=1 l=0.15
+M1 Y A VGND VNB sky130_fd_pr__nfet_01v8 w=0.65 l=0.15
+.ends
+";
+        let r = compare(
+            &Netlist::parse(layout, Some("inv")).unwrap(),
+            &Netlist::parse(schem, Some("inv")).unwrap(),
+        );
+        assert!(r.matched && r.verified, "X-device layout must match M-device schematic: {r:?}");
+        assert_eq!((r.a_devices, r.b_devices), (2, 2));
+    }
 }
