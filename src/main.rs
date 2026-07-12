@@ -144,7 +144,60 @@ fn write_out(text: &str, cli: &Cli) {
     }
 }
 
+/// Emit the vyges-events causal trail for the LVS verdict + each divergence — to stderr
+/// (the report goes to stdout / -o). code=LVS-* is the clustering key; objects are the
+/// device/port refs used for cross-stage co-reference.
+fn emit_lvs_events(r: &LvsResult) {
+    use vyges_events::{Event, Severity};
+    let e = |sev, code: &str, msg: String, objs: Vec<String>| {
+        vyges_events::emit(&Event::new("vyges-lvs", sev, msg).with_code(code).with_objects(objs));
+    };
+    for d in &r.property_diffs {
+        e(
+            Severity::Warn,
+            "LVS-PARAM",
+            format!(
+                "parameter '{}' differs on {} vs {}: {} vs {}",
+                d.param, d.a_device, d.b_device, d.a_value, d.b_value
+            ),
+            vec![format!("device:{}", d.a_device), format!("device:{}", d.b_device)],
+        );
+    }
+    for (kind, a, b) in &r.device_kind_diff {
+        e(
+            Severity::Warn,
+            "LVS-DEVCOUNT",
+            format!("device-kind '{kind}' count differs: a={a} b={b}"),
+            vec![format!("kind:{kind}")],
+        );
+    }
+    for p in &r.only_in_a_ports {
+        e(Severity::Warn, "LVS-PORT", format!("port only in layout: {p}"), vec![format!("port:{p}")]);
+    }
+    for p in &r.only_in_b_ports {
+        e(Severity::Warn, "LVS-PORT", format!("port only in schematic: {p}"), vec![format!("port:{p}")]);
+    }
+    let note = r.note.as_deref().map(|n| format!(" — {n}")).unwrap_or_default();
+    if r.matched {
+        e(
+            Severity::Info,
+            "LVS-MATCH",
+            format!(
+                "LVS MATCH ({} devices, {} nets){}{}",
+                r.a_devices,
+                r.a_nets,
+                if r.verified { " [verified]" } else { "" },
+                note
+            ),
+            vec![],
+        );
+    } else {
+        e(Severity::Error, "LVS-MISMATCH", format!("LVS MISMATCH{note}"), vec![]);
+    }
+}
+
 fn emit(r: &LvsResult, cli: &Cli) -> ! {
+    emit_lvs_events(r);
     let text = if cli.json { engine::report_json(r) } else { engine::render_report(r) };
     write_out(&text, cli);
     if cli.fail_on_mismatch && !r.matched {
