@@ -1,0 +1,30 @@
+* community#2 regression: 23-device analog stage (R + Q + C).
+* C16's two terminals are written in the OPPOSITE order to the schematic
+* below (legal — a capacitor is symmetric). Before the two-terminal-passive
+* symmetry fix this single swapped-order C collapsed all 23 pairings to 0.
+.GLOBAL 0
+.SUBCKT bug23
+R5 Net_47 Vminus 2986
+R1 Vcc Net_41 2986
+R7 Net_49 Net_51 2986
+R8 Net_57 Vminus 2986
+R9 Net_58 Vminus 2986
+R6 Net_49 Net_50 2986
+R2 Vcc Net_42 2986
+R3 Vcc Net_43 2986
+R4 Vcc Net_44 2986
+R146 Net_64 Net_59 2986
+Q1 Net_45 Net_45 Net_41 pnp
+Q2 Net_54 Net_45 Net_42 pnp
+Q3 Net_49 Net_45 Net_43 pnp
+Q4 Net_53 Net_45 Net_44 pnp
+Q6 Net_59 Net_54 Net_50 pnp
+Q7 Net_55 Net_53 Net_51 pnp
+Q10 Vminus inm Net_54 pnp
+Q11 Vminus inp Net_53 pnp
+Q5 Net_45 Vbias Net_47 npn
+Q8 Net_59 Net_55 Net_57 npn
+Q9 Net_55 Net_55 Net_58 npn
+Q12 out Net_59 Vminus npn
+C16 Net_64 out 9011.770f
+.ENDS bug23

@@ -1,0 +1,28 @@
+* Topologically identical to layout.spice: nets renamed, C16 terminal order
+* swapped (Out/net4 vs Net_64/out), values aligned so this is a clean MATCH.
+.GLOBAL 0
+.SUBCKT bug23
+Q1 net12 net12 net16 pnp m=1
+Q2 net5 net12 net15 pnp m=1
+Q3 net13 net12 net14 pnp m=2
+Q4 net1 net12 net2 pnp m=1
+Q7 net9 net1 net11 pnp m=1
+Q6 net3 net5 net10 pnp m=1
+Q11 V- in- net1 pnp m=1
+Q10 V- in+ net5 pnp m=1
+R4 Vcc net2 2986
+R3 Vcc net14 2986
+R2 Vcc net15 2986
+R1 Vcc net16 2986
+R6 net13 net10 2986
+R7 net13 net11 2986
+R146 net4 net3 2986
+R5 net8 V- 2986
+R8 net7 V- 2986
+R9 net6 V- 2986
+Q5 net12 Vbias net8 npn m=2
+Q12 Out net3 V- npn
+Q9 net9 net9 net6 npn m=1
+Q8 net3 net9 net7 npn m=1
+C16 Out net4 9011.770f
+.ENDS bug23

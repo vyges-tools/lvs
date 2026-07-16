@@ -277,6 +277,16 @@ pub fn compare(a: &Netlist, b: &Netlist) -> LvsResult {
             let cols: Vec<u64> = if g.dev_kind[i] == 'M' && terms.len() >= 4 {
                 let (d, gp, sc, bk) = (net_c[terms[0]], net_c[terms[1]], net_c[terms[2]], net_c[terms[3]]);
                 vec![d.min(sc), gp, d.max(sc), bk]
+            } else if matches!(g.dev_kind[i], 'R' | 'C' | 'L') && terms.len() == 2 {
+                // Two-terminal passive: the terminals are interchangeable, so fold
+                // their net-colours as an UNORDERED pair. Without this, a device
+                // whose two terminals are written in swapped order between layout
+                // and schematic (legal for a symmetric device) receives a different
+                // colour, and 1-WL refinement diverges — poisoning the entire
+                // partition (community #2: a single swapped-order C collapsed all
+                // 23 pairings to 0). Mirrors the MOSFET source/drain handling above.
+                let (a, b) = (net_c[terms[0]], net_c[terms[1]]);
+                vec![a.min(b), a.max(b)]
             } else {
                 terms.iter().map(|&nid| net_c[nid]).collect()
             };
@@ -297,8 +307,16 @@ pub fn compare(a: &Netlist, b: &Netlist) -> LvsResult {
                 .iter()
                 .map(|&(d, pos)| {
                     // a MOSFET source/drain pin (pos 0 or 2) is indistinguishable; gate
-                    // (1) and bulk (3) stay positional.
-                    let p = if g.dev_kind[d] == 'M' && (pos == 0 || pos == 2) { 99 } else { pos };
+                    // (1) and bulk (3) stay positional. A two-terminal passive (R/C/L)
+                    // is fully symmetric, so both its terminals share one label (98) —
+                    // otherwise a swapped-order passive desyncs net colours (community #2).
+                    let p = if g.dev_kind[d] == 'M' && (pos == 0 || pos == 2) {
+                        99
+                    } else if matches!(g.dev_kind[d], 'R' | 'C' | 'L') {
+                        98
+                    } else {
+                        pos
+                    };
                     format!("{}:{}", dev_c[d], p)
                 })
                 .collect();
@@ -432,7 +450,7 @@ const VERIFY_BUDGET: u64 = 5_000_000;
 /// Terminal-correspondence orientations to try for a device kind: a MOSFET's
 /// source/drain (positions 0 and 2) are interchangeable, everything else is fixed.
 fn orient_count(kind: char, terms: usize) -> usize {
-    if kind == 'M' && terms >= 4 {
+    if (kind == 'M' && terms >= 4) || (matches!(kind, 'R' | 'C' | 'L') && terms == 2) {
         2
     } else {
         1
@@ -450,6 +468,14 @@ fn term_pairs(kind: char, n: usize, o: usize) -> Vec<(usize, usize)> {
         };
         p.extend((4..n).map(|i| (i, i))); // any extra positional terminals
         p
+    } else if matches!(kind, 'R' | 'C' | 'L') && n == 2 {
+        // symmetric two-terminal passive: orientation 1 swaps the terminals so a
+        // device written in either terminal order can bind to its counterpart.
+        if o == 0 {
+            vec![(0, 0), (1, 1)]
+        } else {
+            vec![(0, 1), (1, 0)]
+        }
     } else {
         (0..n).map(|i| (i, i)).collect()
     }

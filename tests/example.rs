@@ -53,3 +53,23 @@ fn analog_bandgap_miswired_resistor_mismatches() {
     assert!(r.device_kind_diff.iter().any(|(k, _, _)| *k == 'R'));
     assert!(!r.unbalanced.is_empty());
 }
+
+// --- community#2: two-terminal-passive terminal-order symmetry -------------
+// A capacitor is symmetric, so its two terminals may be written in either
+// order. When C16's terminals were written in the opposite order between
+// layout and schematic, 1-WL colour refinement diverged and every one of the
+// 23 device pairings collapsed to 0 (then the bijection search refuted the
+// balanced counts). Both the WL colouring and the explicit bijection now fold
+// R/C/L as unordered two-terminal devices — mirroring MOSFET source/drain.
+#[test]
+fn swapped_terminal_capacitor_still_matches() {
+    let job = LvsJob::load("examples/bug23_swapped_cap/match.lvs").expect("load bug23 job");
+    let r = engine::run_job(&job).expect("run");
+    assert!(r.matched, "swapped-order symmetric C must not break isomorphism: {r:?}");
+    assert!(
+        r.verified,
+        "the match must be a verified bijection, not just balanced 1-WL counts"
+    );
+    assert_eq!((r.a_devices, r.b_devices), (23, 23));
+    assert!(r.unbalanced.is_empty(), "a true match has no unbalanced classes");
+}
