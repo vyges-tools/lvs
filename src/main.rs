@@ -277,6 +277,10 @@ fn main() {
         const DESCRIBE: &str = r#"{
   "name": "lvs",
   "summary": "layout-vs-schematic comparison (job → report)",
+  "maturity": "workflow-validated",
+  "provenance_limitations": [
+      "The job names the layout, schematic and extraction rules; input_hash covers the job path and arguments, not their contents, and SPICE `.include` chains are not followed."
+  ],
   "invocation": {
     "args_template": ["run", "{job}"],
     "optional": [ { "arg": "out", "flag": "-o" } ],
