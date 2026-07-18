@@ -223,6 +223,12 @@ fn main() {
     "properties": { "job": { "type": "string", "description": "the LVS job file" } }
   },
   "artifacts": [ { "role": "lvs_report" } ],
+  "assertion": {
+    "id": "lvs-match",
+    "field": "lvs_met",
+    "pass_when": { "is_true": true },
+    "summary_field": "note"
+  },
   "consumes": ["gds", "schematic"]
 }
 "#;

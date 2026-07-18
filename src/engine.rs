@@ -99,6 +99,20 @@ pub fn report_json(r: &LvsResult) -> String {
     s.push_str("{\n");
     s.push_str(&format!("  \"matched\": {},\n", r.matched));
     s.push_str(&format!("  \"verified\": {},\n", r.verified));
+    // The single LVS verdict, tri-state on purpose.
+    //
+    // A MATCH that the bounded search could not confirm with an explicit
+    // bijection (`matched` without `verified`) is not the same claim as a proven
+    // MATCH: only the necessary condition held, and the sufficient one was left
+    // open. Reporting that as a pass would overstate the evidence, and reporting
+    // it as a mismatch would invent a defect — so it is `null`, and `note` says
+    // why. Consumers wanting one pass/fail read this, not `matched`.
+    let lvs_met = match (r.matched, r.verified) {
+        (false, _) => "false".to_string(), // MISMATCH — a real, reported difference
+        (true, true) => "true".to_string(), // MATCH proven by explicit isomorphism
+        (true, false) => "null".to_string(), // MATCH unconfirmed — inconclusive
+    };
+    s.push_str(&format!("  \"lvs_met\": {lvs_met},\n"));
     if let Some(n) = &r.note {
         s.push_str(&format!("  \"note\": {},\n", jstr(n)));
     }
@@ -168,5 +182,25 @@ mod tests {
         let txt = render_report(&r);
         assert!(txt.contains("MATCH"));
         assert!(report_json(&r).contains("\"matched\": true"));
+        // a proven MATCH is a pass, not merely a match
+        assert!(r.verified);
+        assert!(report_json(&r).contains("\"lvs_met\": true"));
+    }
+
+    /// The three `lvs_met` states, in particular the middle one: a MATCH the
+    /// bounded search could not confirm is inconclusive, not a pass.
+    #[test]
+    fn lvs_met_is_tri_state() {
+        let mut r = LvsResult { matched: true, verified: true, ..Default::default() };
+        assert!(report_json(&r).contains("\"lvs_met\": true"), "proven MATCH -> true");
+
+        r.verified = false;
+        assert!(
+            report_json(&r).contains("\"lvs_met\": null"),
+            "unconfirmed MATCH must not claim a pass"
+        );
+
+        r.matched = false;
+        assert!(report_json(&r).contains("\"lvs_met\": false"), "MISMATCH -> false");
     }
 }
