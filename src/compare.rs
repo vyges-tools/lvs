@@ -17,7 +17,7 @@
 //! a true MATCH and refutes a colour-refinement false positive. MOSFET source/drain
 //! symmetry is handled in both the refinement and the bijection search.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::spice::{Device, Netlist};
 
@@ -382,8 +382,19 @@ pub fn compare(a: &Netlist, b: &Netlist) -> LvsResult {
             props_compatible(g.dev_kind[ai], params[ai], params[bi], PROP_TOL)
         };
 
-        match verify_iso(&g, &dev_c, &net_c, &prop_ok).0 {
-            Verify::Verified => r.verified = true,
+        let (verdict, vmap) = verify_iso(&g, &dev_c, &net_c, &prop_ok);
+        match verdict {
+            Verify::Verified => match audit_bijection(&g, &vmap) {
+                Ok(()) => r.verified = true,
+                // The search and the audit disagree, so neither can be relied on: report the
+                // MATCH as unconfirmed rather than asserting an equivalence we cannot stand behind.
+                Err(why) => {
+                    r.note = Some(format!(
+                        "MATCH by colour refinement; the constructed isomorphism failed an \
+                         independent audit ({why}) — necessary, not confirmed sufficient"
+                    ));
+                }
+            },
             Verify::Unresolved => {
                 r.note = Some(
                     "MATCH by colour refinement; explicit isomorphism not constructed \
@@ -400,7 +411,9 @@ pub fn compare(a: &Netlist, b: &Netlist) -> LvsResult {
                     Verify::Verified => {
                         r.property_diffs = audit_props(&map, a_n, a, b, PROP_TOL);
                         if r.property_diffs.is_empty() {
-                            r.verified = true; // defensive: nothing actually differs
+                            // Same guard on the topology-only retry: only claim `verified` when
+                            // the mapping it produced survives the independent audit.
+                            r.verified = audit_bijection(&g, &map).is_ok(); // defensive: nothing actually differs
                         } else {
                             r.matched = false;
                             r.note = Some(
@@ -546,6 +559,58 @@ fn assign_device(
 /// require matching device parameters); pass `|_,_| true` for topology only.
 /// Returns the verdict and, on `Verified`, the `(a_dev, b_dev)` global-index
 /// bijection it built.
+/// Independently audit the bijection `verify_iso` returned, before trusting the MATCH it implies.
+///
+/// `verified` is the strongest claim this engine makes — a *proven* equivalence rather than a
+/// necessary condition — so it should not rest on a single computation. This re-derives, by
+/// counting alone, facts that must hold if a real bijection exists: it is total over A's devices,
+/// injective into B's, kind-preserving, and the two sides have equal device and net counts.
+///
+/// The check is deliberately trivial where the search is subtle: a defect in the backtracking
+/// (returning `Verified` with a partial or reused mapping) would otherwise be indistinguishable
+/// from a genuine MATCH. Disagreement is reported as inconclusive rather than a MATCH, because
+/// two computations that disagree mean neither can be relied on.
+fn audit_bijection(g: &Graph, map: &[(usize, usize)]) -> Result<(), String> {
+    let a_devs = g.dev_side.iter().filter(|&&s| s == 0).count();
+    let b_devs = g.dev_side.len() - a_devs;
+    let a_nets = g.net_side.iter().filter(|&&s| s == 0).count();
+    let b_nets = g.net_side.len() - a_nets;
+
+    if a_devs != b_devs {
+        return Err(format!("device counts differ ({a_devs} vs {b_devs})"));
+    }
+    if a_nets != b_nets {
+        return Err(format!("net counts differ ({a_nets} vs {b_nets})"));
+    }
+    if map.len() != a_devs {
+        return Err(format!(
+            "mapping covers {} of {a_devs} device(s) — not total",
+            map.len()
+        ));
+    }
+
+    let mut seen_a = BTreeSet::new();
+    let mut seen_b = BTreeSet::new();
+    for &(a, b) in map {
+        if g.dev_side.get(a) != Some(&0) || g.dev_side.get(b) != Some(&1) {
+            return Err(format!("mapping pairs {a}->{b} across the wrong sides"));
+        }
+        if !seen_a.insert(a) {
+            return Err(format!("device {a} mapped more than once"));
+        }
+        if !seen_b.insert(b) {
+            return Err(format!("two devices mapped onto {b} — not injective"));
+        }
+        if g.dev_kind[a] != g.dev_kind[b] {
+            return Err(format!(
+                "mapping pairs unlike devices ('{}' onto '{}')",
+                g.dev_kind[a], g.dev_kind[b]
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn verify_iso(
     g: &Graph,
     dev_c: &[u64],
@@ -990,6 +1055,79 @@ fn unbalanced(
 
 #[cfg(test)]
 mod tests {
+
+    /// A hand-built two-device graph: A={0,1}, B={2,3}, all the same kind, nets 0/1 per side.
+    fn audit_graph() -> Graph {
+        Graph {
+            dev_side: vec![0, 0, 1, 1],
+            dev_label: vec!["a0".into(), "a1".into(), "b0".into(), "b1".into()],
+            dev_kind: vec!['M', 'M', 'M', 'M'],
+            dev_terms: vec![vec![0], vec![1], vec![2], vec![3]],
+            net_side: vec![0, 0, 1, 1],
+            net_label: vec!["n".into(); 4],
+            net_name: vec!["n".into(); 4],
+            net_init: vec!["n".into(); 4],
+            net_incid: vec![vec![]; 4],
+        }
+    }
+
+    /// The audit exists to disagree with a faulty search, so each way a mapping can be wrong
+    /// must actually be rejected — otherwise it would pass vacuously and guard nothing.
+    #[test]
+    fn audit_rejects_every_way_a_bijection_can_be_wrong() {
+        let g = audit_graph();
+        assert!(
+            audit_bijection(&g, &[(0, 2), (1, 3)]).is_ok(),
+            "a real bijection passes"
+        );
+
+        let cases: &[(&[(usize, usize)], &str)] = &[
+            (&[(0, 2)], "not total"),
+            (&[(0, 2), (1, 2)], "not injective"),
+            (&[(0, 2), (0, 3)], "mapped more than once"),
+            (&[(0, 1), (1, 3)], "wrong sides"),
+        ];
+        for (map, why) in cases {
+            assert!(
+                audit_bijection(&g, map).is_err(),
+                "a mapping that is {why} must be rejected: {map:?}"
+            );
+        }
+
+        // Unlike kinds: a resistor cannot stand in for a transistor.
+        let mut g2 = audit_graph();
+        g2.dev_kind[2] = 'R';
+        assert!(
+            audit_bijection(&g2, &[(0, 2), (1, 3)]).is_err(),
+            "kinds must correspond"
+        );
+
+        // Unequal sides cannot admit a bijection at all.
+        let mut g3 = audit_graph();
+        g3.dev_side = vec![0, 0, 0, 1];
+        assert!(
+            audit_bijection(&g3, &[(0, 3)]).is_err(),
+            "device counts must match"
+        );
+        let mut g4 = audit_graph();
+        g4.net_side = vec![0, 0, 0, 1];
+        assert!(
+            audit_bijection(&g4, &[(0, 2), (1, 3)]).is_err(),
+            "net counts must match"
+        );
+    }
+
+    /// The real engine still reaches a confirmed MATCH — the audit must not reject sound work.
+    #[test]
+    fn a_genuine_match_survives_the_audit() {
+        let r = crate::engine::demo();
+        assert!(
+            r.matched && r.verified,
+            "the demo pair is a proven MATCH: {r:?}"
+        );
+        assert!(r.note.is_none(), "a clean verified MATCH carries no caveat");
+    }
+
     use super::*;
 
     fn nl(t: &str) -> Netlist {
