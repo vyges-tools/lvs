@@ -250,13 +250,20 @@ fn main() {
         const DESCRIBE: &str = r#"{
   "name": "lvs",
   "summary": "layout-vs-schematic comparison (job → report)",
-  "invocation": { "args_template": ["run", "{job}"], "emits_json": true },
+  "invocation": {
+    "args_template": ["run", "{job}"],
+    "optional": [ { "arg": "out", "flag": "-o" } ],
+    "emits_json": true
+  },
   "inputs": {
     "type": "object",
     "required": ["job"],
-    "properties": { "job": { "type": "string", "description": "the LVS job file" } }
+    "properties": {
+      "job": { "type": "string", "description": "the LVS job file" },
+      "out": { "type": "string", "description": "write the report to FILE instead of stdout" }
+    }
   },
-  "artifacts": [ { "role": "lvs_report" } ],
+  "artifacts": [ { "role": "lvs_report", "from_arg": "out" } ],
   "assertion": {
     "id": "lvs-match",
     "field": "lvs_met",
