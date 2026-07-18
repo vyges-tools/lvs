@@ -58,7 +58,11 @@ fn link(label: &str, url: &str) {
     use std::io::IsTerminal;
     println!("{label}:\n  {url}");
     if std::io::stdout().is_terminal() {
-        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let opener = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
         let _ = std::process::Command::new(opener).arg(url).status();
     }
 }
@@ -150,7 +154,11 @@ fn write_out(text: &str, cli: &Cli) {
 fn emit_lvs_events(r: &LvsResult) {
     use vyges_events::{Event, Severity};
     let e = |sev, code: &str, msg: String, objs: Vec<String>| {
-        vyges_events::emit(&Event::new("vyges-lvs", sev, msg).with_code(code).with_objects(objs));
+        vyges_events::emit(
+            &Event::new("vyges-lvs", sev, msg)
+                .with_code(code)
+                .with_objects(objs),
+        );
     };
     for d in &r.property_diffs {
         e(
@@ -160,7 +168,10 @@ fn emit_lvs_events(r: &LvsResult) {
                 "parameter '{}' differs on {} vs {}: {} vs {}",
                 d.param, d.a_device, d.b_device, d.a_value, d.b_value
             ),
-            vec![format!("device:{}", d.a_device), format!("device:{}", d.b_device)],
+            vec![
+                format!("device:{}", d.a_device),
+                format!("device:{}", d.b_device),
+            ],
         );
     }
     for (kind, a, b) in &r.device_kind_diff {
@@ -172,12 +183,26 @@ fn emit_lvs_events(r: &LvsResult) {
         );
     }
     for p in &r.only_in_a_ports {
-        e(Severity::Warn, "LVS-PORT", format!("port only in layout: {p}"), vec![format!("port:{p}")]);
+        e(
+            Severity::Warn,
+            "LVS-PORT",
+            format!("port only in layout: {p}"),
+            vec![format!("port:{p}")],
+        );
     }
     for p in &r.only_in_b_ports {
-        e(Severity::Warn, "LVS-PORT", format!("port only in schematic: {p}"), vec![format!("port:{p}")]);
+        e(
+            Severity::Warn,
+            "LVS-PORT",
+            format!("port only in schematic: {p}"),
+            vec![format!("port:{p}")],
+        );
     }
-    let note = r.note.as_deref().map(|n| format!(" — {n}")).unwrap_or_default();
+    let note = r
+        .note
+        .as_deref()
+        .map(|n| format!(" — {n}"))
+        .unwrap_or_default();
     if r.matched {
         e(
             Severity::Info,
@@ -192,13 +217,22 @@ fn emit_lvs_events(r: &LvsResult) {
             vec![],
         );
     } else {
-        e(Severity::Error, "LVS-MISMATCH", format!("LVS MISMATCH{note}"), vec![]);
+        e(
+            Severity::Error,
+            "LVS-MISMATCH",
+            format!("LVS MISMATCH{note}"),
+            vec![],
+        );
     }
 }
 
 fn emit(r: &LvsResult, cli: &Cli) -> ! {
     emit_lvs_events(r);
-    let text = if cli.json { engine::report_json(r) } else { engine::render_report(r) };
+    let text = if cli.json {
+        engine::report_json(r)
+    } else {
+        engine::render_report(r)
+    };
     write_out(&text, cli);
     if cli.fail_on_mismatch && !r.matched {
         if !cli.quiet {
@@ -250,7 +284,11 @@ fn main() {
         return link("Star vyges-lvs on GitHub ⭐", STAR_URL);
     }
     if cli.version {
-        println!("vyges-lvs {} ({})", vyges_lvs::VERSION, env!("VYGES_GIT_SHA"));
+        println!(
+            "vyges-lvs {} ({})",
+            vyges_lvs::VERSION,
+            env!("VYGES_GIT_SHA")
+        );
         println!("{}", vyges_lvs::COPYRIGHT);
         return;
     }
@@ -300,7 +338,11 @@ fn main() {
                         None => print!("{spice}"),
                     }
                     if cli.verbose {
-                        eprintln!("extracted {} device(s), {} port(s)", nl.devices.len(), nl.ports.len());
+                        eprintln!(
+                            "extracted {} device(s), {} port(s)",
+                            nl.devices.len(),
+                            nl.ports.len()
+                        );
                     }
                 }
                 Err(e) => {
@@ -317,7 +359,10 @@ fn main() {
             match LvsJob::load(path) {
                 Ok(j) => println!(
                     "OK  layout={} schematic={} top={}",
-                    j.layout_gds.as_deref().or(j.layout.as_deref()).unwrap_or("?"),
+                    j.layout_gds
+                        .as_deref()
+                        .or(j.layout.as_deref())
+                        .unwrap_or("?"),
                     j.schematic,
                     j.top.as_deref().unwrap_or("(top-level)")
                 ),
@@ -353,7 +398,11 @@ fn main() {
                 }
             }
             if cli.verbose {
-                let src = job.layout_gds.as_deref().or(job.layout.as_deref()).unwrap_or("?");
+                let src = job
+                    .layout_gds
+                    .as_deref()
+                    .or(job.layout.as_deref())
+                    .unwrap_or("?");
                 eprintln!("comparing {} vs {}", src, job.schematic);
             }
             match engine::run_job(&job) {

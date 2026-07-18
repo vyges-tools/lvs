@@ -15,9 +15,17 @@ fn extracted() -> Netlist {
 fn extracts_two_transistors_with_correct_types_and_ports() {
     let lay = extracted();
     assert_eq!(lay.devices.len(), 2, "an inverter = 2 transistors");
-    assert_eq!(lay.ports, ["A", "VDD", "VSS", "Y"], "ports from TEXT labels");
+    assert_eq!(
+        lay.ports,
+        ["A", "VDD", "VSS", "Y"],
+        "ports from TEXT labels"
+    );
     let models: BTreeSet<&str> = lay.devices.iter().map(|d| d.model.as_str()).collect();
-    assert_eq!(models, BTreeSet::from(["nfet", "pfet"]), "one nfet (n-diff) + one pfet (in nwell)");
+    assert_eq!(
+        models,
+        BTreeSet::from(["nfet", "pfet"]),
+        "one nfet (n-diff) + one pfet (in nwell)"
+    );
     // bulk extracted: pfet bulk = nwell net (VDD via tap), nfet bulk = substrate (VSS)
     let bulk = |m: &str| lay.devices.iter().find(|d| d.model == m).unwrap().nodes[3].clone();
     assert_eq!(bulk("pfet"), "VDD", "pfet bulk = nwell tap -> VDD");
@@ -27,9 +35,16 @@ fn extracts_two_transistors_with_correct_types_and_ports() {
 #[test]
 fn extracted_layout_matches_schematic() {
     let lay = extracted();
-    let sch = Netlist::parse(&std::fs::read_to_string("examples/inv/schematic.spice").unwrap(), Some("inverter")).unwrap();
+    let sch = Netlist::parse(
+        &std::fs::read_to_string("examples/inv/schematic.spice").unwrap(),
+        Some("inverter"),
+    )
+    .unwrap();
     let r = compare(&lay, &sch);
-    assert!(r.matched, "extracted-from-GDS netlist should MATCH the schematic: {r:?}");
+    assert!(
+        r.matched,
+        "extracted-from-GDS netlist should MATCH the schematic: {r:?}"
+    );
 }
 
 #[test]
@@ -39,7 +54,11 @@ fn hierarchical_with_via_matches() {
     let rules = Rules::load("examples/inv/hier.rules").expect("rules");
     let lay = extract_file("examples/inv/inv_hier.gds", Some("inv_hier"), &rules).expect("extract");
     assert_eq!(lay.devices.len(), 2, "flattened SREF -> 2 transistors");
-    assert_eq!(lay.ports, ["A", "VDD", "VSS", "Y"], "A stays one net across the met1->met2 via");
+    assert_eq!(
+        lay.ports,
+        ["A", "VDD", "VSS", "Y"],
+        "A stays one net across the met1->met2 via"
+    );
 }
 
 #[test]
@@ -51,7 +70,10 @@ fn wrong_schematic_mismatches() {
         Some("inverter"),
     )
     .unwrap();
-    assert!(!compare(&lay, &bad).matched, "a pfet->nfet error must MISMATCH");
+    assert!(
+        !compare(&lay, &bad).matched,
+        "a pfet->nfet error must MISMATCH"
+    );
 }
 
 #[test]
@@ -60,8 +82,16 @@ fn extracts_channel_width_and_length() {
     // 40-dbu poly extent and W the 100-dbu active extent; db_unit 1e-9 -> L=40n, W=100n.
     let lay = extracted();
     for d in &lay.devices {
-        let w = d.params.get("w").copied().expect("W extracted from geometry");
-        let l = d.params.get("l").copied().expect("L extracted from geometry");
+        let w = d
+            .params
+            .get("w")
+            .copied()
+            .expect("W extracted from geometry");
+        let l = d
+            .params
+            .get("l")
+            .copied()
+            .expect("L extracted from geometry");
         assert!((l - 40e-9).abs() < 1e-12, "{} L = {l}", d.model);
         assert!((w - 100e-9).abs() < 1e-12, "{} W = {w}", d.model);
     }
@@ -80,6 +110,13 @@ fn wrong_drawn_width_mismatches() {
     )
     .unwrap();
     let r = compare(&lay, &sch);
-    assert!(!r.matched, "a layout drawn at the wrong width must MISMATCH");
-    assert!(r.property_diffs.iter().any(|d| d.param == "w"), "{:?}", r.property_diffs);
+    assert!(
+        !r.matched,
+        "a layout drawn at the wrong width must MISMATCH"
+    );
+    assert!(
+        r.property_diffs.iter().any(|d| d.param == "w"),
+        "{:?}",
+        r.property_diffs
+    );
 }

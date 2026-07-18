@@ -24,8 +24,8 @@
 // resolving across the engine.
 pub use vyges_loom::spice;
 pub mod compare;
-pub mod job;
 pub mod engine;
+pub mod job;
 // geometry kernel now comes from the shared vyges-layout foundation (was vendored
 // under src/layout/). Aliased so `crate::layout::{boolean,gds,geom,flatten}` keeps
 // resolving across the engine.

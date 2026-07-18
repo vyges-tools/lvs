@@ -7,10 +7,20 @@ use vyges_lvs::layout::gds::{Cell, Element, Library};
 use vyges_lvs::layout::geom::Rect;
 
 fn b(layer: i16, r: Rect) -> Element {
-    Element::Boundary { layer, datatype: 0, pts: r.as_boundary() }
+    Element::Boundary {
+        layer,
+        datatype: 0,
+        pts: r.as_boundary(),
+    }
 }
 fn t(layer: i16, x: i32, y: i32, s: &str) -> Element {
-    Element::Text { layer, texttype: 0, x, y, string: s.into() }
+    Element::Text {
+        layer,
+        texttype: 0,
+        x,
+        y,
+        string: s.into(),
+    }
 }
 
 fn main() {
@@ -31,23 +41,34 @@ fn main() {
             b(6, Rect::new(40, 340, 60, 360)),
             b(6, Rect::new(220, 340, 240, 360)),
             b(6, Rect::new(145, 190, 155, 210)),
-            b(9, Rect::new(90, 360, 110, 380)),  // nwell tap
+            b(9, Rect::new(90, 360, 110, 380)), // nwell tap
         ],
     };
     // top: place inv_core, route A up to met2 (10) through a via (11), label on top
     let top = Cell {
         name: "inv_hier".into(),
         elements: vec![
-            Element::Sref { sname: "inv_core".into(), x: 0, y: 0, reflect: false, mag: 1.0, angle: 0.0 },
+            Element::Sref {
+                sname: "inv_core".into(),
+                x: 0,
+                y: 0,
+                reflect: false,
+                mag: 1.0,
+                angle: 0.0,
+            },
             b(10, Rect::new(140, 185, 160, 215)), // met2 over the A pin
             b(11, Rect::new(145, 190, 155, 210)), // via met1 -> met2 (inside both)
-            t(8, 150, 200, "A"),  // A pin (now met1+met2 via the via)
+            t(8, 150, 200, "A"),                  // A pin (now met1+met2 via the via)
             t(8, 240, 200, "Y"),
             t(8, 60, 50, "VSS"),
             t(8, 60, 350, "VDD"),
         ],
     };
-    let lib = Library { name: "INVH".into(), cells: vec![inv_core, top], ..Library::default() };
+    let lib = Library {
+        name: "INVH".into(),
+        cells: vec![inv_core, top],
+        ..Library::default()
+    };
     std::fs::create_dir_all("examples/inv").unwrap();
     lib.save("examples/inv/inv_hier.gds").unwrap();
     println!("wrote examples/inv/inv_hier.gds");

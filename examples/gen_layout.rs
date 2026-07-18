@@ -6,10 +6,20 @@ use vyges_lvs::layout::gds::{Cell, Element, Library};
 use vyges_lvs::layout::geom::Rect;
 
 fn b(layer: i16, r: Rect) -> Element {
-    Element::Boundary { layer, datatype: 0, pts: r.as_boundary() }
+    Element::Boundary {
+        layer,
+        datatype: 0,
+        pts: r.as_boundary(),
+    }
 }
 fn t(layer: i16, x: i32, y: i32, s: &str) -> Element {
-    Element::Text { layer, texttype: 0, x, y, string: s.into() }
+    Element::Text {
+        layer,
+        texttype: 0,
+        x,
+        y,
+        string: s.into(),
+    }
 }
 
 fn main() {
@@ -29,9 +39,9 @@ fn main() {
             b(5, Rect::new(180, 0, 300, 400)),   // Y (both drains)
             b(5, Rect::new(135, 180, 165, 220)), // A (gate pin)
             // contacts (diff/poly -> met1): source, drain x2, and the gate
-            b(6, Rect::new(40, 40, 60, 60)),     // nfet source diff -> VSS
-            b(6, Rect::new(220, 40, 240, 60)),   // nfet drain  diff -> Y
-            b(6, Rect::new(40, 340, 60, 360)),   // pfet source diff -> VDD
+            b(6, Rect::new(40, 40, 60, 60)), // nfet source diff -> VSS
+            b(6, Rect::new(220, 40, 240, 60)), // nfet drain  diff -> Y
+            b(6, Rect::new(40, 340, 60, 360)), // pfet source diff -> VDD
             b(6, Rect::new(220, 340, 240, 360)), // pfet drain  diff -> Y
             b(6, Rect::new(145, 190, 155, 210)), // poly gate        -> A
             // well tap (nwell -> met1): ties the nwell to VDD
@@ -43,7 +53,11 @@ fn main() {
             t(8, 150, 200, "A"),
         ],
     };
-    let lib = Library { name: "INV".into(), cells: vec![cell], ..Library::default() };
+    let lib = Library {
+        name: "INV".into(),
+        cells: vec![cell],
+        ..Library::default()
+    };
     std::fs::create_dir_all("examples/inv").unwrap();
     lib.save("examples/inv/inverter.gds").unwrap();
     println!("wrote examples/inv/inverter.gds");

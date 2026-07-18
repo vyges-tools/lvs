@@ -17,7 +17,13 @@ fn adapt(nl: crate::layout::netlist::Netlist) -> Netlist {
         devices: nl
             .devices
             .into_iter()
-            .map(|d| Device { kind: d.kind, name: d.name, nodes: d.nodes, model: d.model, params: d.params })
+            .map(|d| Device {
+                kind: d.kind,
+                name: d.name,
+                nodes: d.nodes,
+                model: d.model,
+                params: d.params,
+            })
             .collect(),
     }
 }

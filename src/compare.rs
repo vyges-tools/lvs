@@ -116,13 +116,13 @@ enum Verify {
 struct Graph {
     // devices and nets, each tagged with side 0 (A) / 1 (B)
     dev_side: Vec<u8>,
-    dev_label: Vec<String>,         // display name (side-tagged)
-    dev_kind: Vec<char>,            // device kind (M/R/C/X/...) for terminal symmetry
-    dev_terms: Vec<Vec<usize>>,     // net indices, ordered
+    dev_label: Vec<String>,     // display name (side-tagged)
+    dev_kind: Vec<char>,        // device kind (M/R/C/X/...) for terminal symmetry
+    dev_terms: Vec<Vec<usize>>, // net indices, ordered
     net_side: Vec<u8>,
     net_label: Vec<String>,
-    net_name: Vec<String>,          // raw net name (no side prefix), for supply detection
-    net_init: Vec<String>,          // initial colour seed (port name / supply / generic)
+    net_name: Vec<String>, // raw net name (no side prefix), for supply detection
+    net_init: Vec<String>, // initial colour seed (port name / supply / generic)
     net_incid: Vec<Vec<(usize, usize)>>, // (device idx, terminal position)
 }
 
@@ -137,8 +137,8 @@ fn is_supply_name(name: &str) -> bool {
     // strip a leading bus/hier path; compare the leaf, case-insensitively
     let leaf = name.rsplit(['/', '.', ':']).next().unwrap_or(name);
     const SUPPLY: &[&str] = &[
-        "0", "vdd", "vss", "gnd", "vcc", "vee", "vpwr", "vgnd", "vnb", "vpb", "vbn", "vbp",
-        "vdda", "vssa", "vccd", "vssd", "avdd", "avss", "dvdd", "dvss", "vbb", "vpp", "vsub",
+        "0", "vdd", "vss", "gnd", "vcc", "vee", "vpwr", "vgnd", "vnb", "vpb", "vbn", "vbp", "vdda",
+        "vssa", "vccd", "vssd", "avdd", "avss", "dvdd", "dvss", "vbb", "vpp", "vsub",
     ];
     let lc = leaf.to_ascii_lowercase();
     SUPPLY.contains(&lc.as_str())
@@ -165,7 +165,8 @@ fn build(a: &Netlist, b: &Netlist) -> Graph {
             }
             let i = g.net_side.len();
             g.net_side.push(side);
-            g.net_label.push(format!("{}/{}", if side == 0 { "A" } else { "B" }, name));
+            g.net_label
+                .push(format!("{}/{}", if side == 0 { "A" } else { "B" }, name));
             g.net_name.push(name.to_string());
             // supplies anchored by their canonical name (so VDD ≠ VSS, side-independent);
             // ports anchored by name (boundary aligns); internals generic
@@ -187,7 +188,8 @@ fn build(a: &Netlist, b: &Netlist) -> Graph {
                 g.net_incid[nid].push((did, pos));
             }
             g.dev_side.push(side);
-            g.dev_label.push(format!("{}/{}", if side == 0 { "A" } else { "B" }, d.name));
+            g.dev_label
+                .push(format!("{}/{}", if side == 0 { "A" } else { "B" }, d.name));
             g.dev_kind.push(d.kind);
             g.dev_terms.push(terms);
         }
@@ -231,7 +233,10 @@ pub fn compare(a: &Netlist, b: &Netlist) -> LvsResult {
     let (ka, kb) = (kinds(a), kinds(b));
     let allk: std::collections::BTreeSet<char> = ka.keys().chain(kb.keys()).copied().collect();
     for k in allk {
-        let (ca, cb) = (ka.get(&k).copied().unwrap_or(0), kb.get(&k).copied().unwrap_or(0));
+        let (ca, cb) = (
+            ka.get(&k).copied().unwrap_or(0),
+            kb.get(&k).copied().unwrap_or(0),
+        );
         if ca != cb {
             r.device_kind_diff.push((k, ca, cb));
         }
@@ -250,8 +255,15 @@ pub fn compare(a: &Netlist, b: &Netlist) -> LvsResult {
 
     // initial colours
     let mut reg: BTreeMap<String, u64> = BTreeMap::new();
-    let mut dev_c: Vec<u64> = dev_seed.iter().map(|s| intern(&mut reg, format!("d{s}"))).collect();
-    let mut net_c: Vec<u64> = g.net_init.iter().map(|s| intern(&mut reg, format!("x{s}"))).collect();
+    let mut dev_c: Vec<u64> = dev_seed
+        .iter()
+        .map(|s| intern(&mut reg, format!("d{s}")))
+        .collect();
+    let mut net_c: Vec<u64> = g
+        .net_init
+        .iter()
+        .map(|s| intern(&mut reg, format!("x{s}")))
+        .collect();
     let mut prev = reg.len();
 
     // Anchor supplies: a net is held at a fixed colour (excluded from refinement)
@@ -275,7 +287,12 @@ pub fn compare(a: &Netlist, b: &Netlist) -> LvsResult {
             // MOSFET (kind 'M', terminals [d, g, s, b]): source/drain are
             // interchangeable (match {d,s} unordered); gate and **bulk** are positional.
             let cols: Vec<u64> = if g.dev_kind[i] == 'M' && terms.len() >= 4 {
-                let (d, gp, sc, bk) = (net_c[terms[0]], net_c[terms[1]], net_c[terms[2]], net_c[terms[3]]);
+                let (d, gp, sc, bk) = (
+                    net_c[terms[0]],
+                    net_c[terms[1]],
+                    net_c[terms[2]],
+                    net_c[terms[3]],
+                );
                 vec![d.min(sc), gp, d.max(sc), bk]
             } else if matches!(g.dev_kind[i], 'R' | 'C' | 'L') && terms.len() == 2 {
                 // Two-terminal passive: the terminals are interchangeable, so fold
@@ -334,7 +351,8 @@ pub fn compare(a: &Netlist, b: &Netlist) -> LvsResult {
 
     // tally each colour class A vs B (devices and nets separately)
     r.unbalanced = unbalanced("device", &dev_c, &g.dev_side, &g.dev_label);
-    r.unbalanced.extend(unbalanced("net", &net_c, &g.net_side, &g.net_label));
+    r.unbalanced
+        .extend(unbalanced("net", &net_c, &g.net_side, &g.net_label));
     // Smallest classes first: a localized fault lands in a tiny (often singleton)
     // class, so the actual offending device/net is named at the top of the report
     // rather than buried under large balanced-but-shifted populations.
@@ -354,8 +372,12 @@ pub fn compare(a: &Netlist, b: &Netlist) -> LvsResult {
     if r.matched {
         // global device order matches `build`: all of A's devices, then all of B's.
         let a_n = a.devices.len();
-        let params: Vec<&std::collections::BTreeMap<String, f64>> =
-            a.devices.iter().chain(b.devices.iter()).map(|d| &d.params).collect();
+        let params: Vec<&std::collections::BTreeMap<String, f64>> = a
+            .devices
+            .iter()
+            .chain(b.devices.iter())
+            .map(|d| &d.params)
+            .collect();
         let prop_ok = |ai: usize, bi: usize| {
             props_compatible(g.dev_kind[ai], params[ai], params[bi], PROP_TOL)
         };
@@ -585,12 +607,21 @@ fn verify_iso(
         placed: i64,
     }
     let cand_list = |idx: usize| -> Vec<usize> {
-        b_by_colour.get(&dev_c[a_devs[idx]]).cloned().unwrap_or_default()
+        b_by_colour
+            .get(&dev_c[a_devs[idx]])
+            .cloned()
+            .unwrap_or_default()
     };
 
     let mut budget = VERIFY_BUDGET;
     let mut stack: Vec<Frame> = Vec::with_capacity(m);
-    stack.push(Frame { cands: cand_list(0), ci: 0, oi: 0, undo: vec![], placed: -1 });
+    stack.push(Frame {
+        cands: cand_list(0),
+        ci: 0,
+        oi: 0,
+        undo: vec![],
+        placed: -1,
+    });
 
     loop {
         if budget == 0 {
@@ -651,11 +682,20 @@ fn verify_iso(
             let last = idx + 1 == m;
             stack.push(fr);
             if last {
-                let map =
-                    stack.iter().enumerate().map(|(k, f)| (a_devs[k], f.placed as usize)).collect();
+                let map = stack
+                    .iter()
+                    .enumerate()
+                    .map(|(k, f)| (a_devs[k], f.placed as usize))
+                    .collect();
                 return (Verify::Verified, map);
             }
-            stack.push(Frame { cands: cand_list(idx + 1), ci: 0, oi: 0, undo: vec![], placed: -1 });
+            stack.push(Frame {
+                cands: cand_list(idx + 1),
+                ci: 0,
+                oi: 0,
+                undo: vec![],
+                placed: -1,
+            });
         } else {
             // dead end — drop this frame and let the parent try its next option
             match stack.last_mut() {
@@ -718,7 +758,10 @@ fn combine_size(kind: char, group: &[&Device]) -> BTreeMap<String, f64> {
             p.remove("m");
         }
         'C' if all("value") => {
-            p.insert("value".into(), group.iter().map(|d| d.params["value"]).sum());
+            p.insert(
+                "value".into(),
+                group.iter().map(|d| d.params["value"]).sum(),
+            );
         }
         'R' | 'L' if all("value") && group.iter().all(|d| d.params["value"] > 0.0) => {
             let g: f64 = group.iter().map(|d| 1.0 / d.params["value"]).sum();
@@ -829,7 +872,11 @@ fn combine_series(nl: &Netlist) -> Netlist {
                 *cnt.entry(net.as_str()).or_default() += 1;
             }
         }
-        let ends: Vec<&str> = cnt.iter().filter(|(_, &c)| c == 1).map(|(&s, _)| s).collect();
+        let ends: Vec<&str> = cnt
+            .iter()
+            .filter(|(_, &c)| c == 1)
+            .map(|(&s, _)| s)
+            .collect();
         if ends.len() != 2 {
             continue; // not a simple path — leave the devices as they are
         }
@@ -863,7 +910,11 @@ fn combine_series(nl: &Netlist) -> Netlist {
             devices.push(nl.devices[i].clone());
         }
     }
-    Netlist { name: nl.name.clone(), ports: nl.ports.clone(), devices }
+    Netlist {
+        name: nl.name.clone(),
+        ports: nl.ports.clone(),
+        devices,
+    }
 }
 
 /// Merge electrically-parallel devices into one each (a netlist normalization run
@@ -900,10 +951,19 @@ fn combine_parallel(nl: &Netlist) -> Netlist {
             });
         }
     }
-    Netlist { name: nl.name.clone(), ports: nl.ports.clone(), devices }
+    Netlist {
+        name: nl.name.clone(),
+        ports: nl.ports.clone(),
+        devices,
+    }
 }
 
-fn unbalanced(what: &'static str, colour: &[u64], side: &[u8], label: &[String]) -> Vec<Unbalanced> {
+fn unbalanced(
+    what: &'static str,
+    colour: &[u64],
+    side: &[u8],
+    label: &[String],
+) -> Vec<Unbalanced> {
     let mut by: BTreeMap<u64, (Vec<String>, Vec<String>)> = BTreeMap::new();
     for i in 0..colour.len() {
         let e = by.entry(colour[i]).or_default();
@@ -936,15 +996,23 @@ mod tests {
         Netlist::parse(t, None).unwrap()
     }
 
-    const INV_A: &str = ".subckt inv A Y VDD VSS\nMp Y A VDD VDD pfet\nMn Y A VSS VSS nfet\n.ends\n";
+    const INV_A: &str =
+        ".subckt inv A Y VDD VSS\nMp Y A VDD VDD pfet\nMn Y A VSS VSS nfet\n.ends\n";
     // same circuit, internal nets renamed + device order swapped
-    const INV_B: &str = ".subckt inv A Y VDD VSS\nM1 Y A VSS VSS nfet\nM0 Y A VDD VDD pfet\n.ends\n";
+    const INV_B: &str =
+        ".subckt inv A Y VDD VSS\nM1 Y A VSS VSS nfet\nM0 Y A VDD VDD pfet\n.ends\n";
 
     #[test]
     fn identical_circuits_match() {
         let r = compare(&nl(INV_A), &nl(INV_B));
-        assert!(r.matched, "renamed/reordered same circuit should MATCH: {r:?}");
-        assert!(r.verified, "MATCH should be confirmed by an explicit bijection: {r:?}");
+        assert!(
+            r.matched,
+            "renamed/reordered same circuit should MATCH: {r:?}"
+        );
+        assert!(
+            r.verified,
+            "MATCH should be confirmed by an explicit bijection: {r:?}"
+        );
         assert_eq!(r.a_devices, 2);
     }
 
@@ -970,7 +1038,10 @@ mod tests {
         let a = "R0 n0 n1\nR1 n1 n2\nR2 n2 n0\n";
         let b = "R0 m0 m1\nR1 m1 m2\nR2 m2 m0\n";
         let r = compare(&nl(a), &nl(b));
-        assert!(r.matched && r.verified, "isomorphic triangles should verify: {r:?}");
+        assert!(
+            r.matched && r.verified,
+            "isomorphic triangles should verify: {r:?}"
+        );
     }
 
     #[test]
@@ -1018,7 +1089,9 @@ mod tests {
             .cloned()
             .collect();
         assert!(
-            ["a0", "a1", "y0", "Mp0", "Mn0", "Mp1"].iter().any(|t| named.contains(t)),
+            ["a0", "a1", "y0", "Mp0", "Mn0", "Mp1"]
+                .iter()
+                .any(|t| named.contains(t)),
             "the faulted neighbourhood should be named, got {named:?}"
         );
     }
@@ -1027,7 +1100,11 @@ mod tests {
     fn supply_heavy_equivalent_still_matches() {
         // anchoring must not create false mismatches on a clean design
         let r = compare(&bank(200, false), &bank(200, false));
-        assert!(r.matched, "identical supply-heavy banks must MATCH: {} classes", r.unbalanced.len());
+        assert!(
+            r.matched,
+            "identical supply-heavy banks must MATCH: {} classes",
+            r.unbalanced.len()
+        );
     }
 
     #[test]
@@ -1040,8 +1117,15 @@ mod tests {
             Mn Y A VSS VSS nfet w=1u l=0.15u\n.ends\n";
         let sch = ".subckt c A Y VDD VSS\nMp Y A VDD VDD pfet w=2u l=0.15u\nMn Y A VSS VSS nfet w=1u l=0.15u\n.ends\n";
         let r = compare(&nl(lay), &nl(sch));
-        assert!(r.matched && r.verified, "4 fingers should combine and MATCH a W=2 device: {r:?}");
-        assert_eq!((r.a_devices, r.b_devices), (2, 2), "fingers combined to 2 devices");
+        assert!(
+            r.matched && r.verified,
+            "4 fingers should combine and MATCH a W=2 device: {r:?}"
+        );
+        assert_eq!(
+            (r.a_devices, r.b_devices),
+            (2, 2),
+            "fingers combined to 2 devices"
+        );
     }
 
     #[test]
@@ -1052,7 +1136,10 @@ mod tests {
             Mp2 Y A VDD VDD pfet w=0.5u l=0.15u\nMn Y A VSS VSS nfet w=1u l=0.15u\n.ends\n";
         let sch = ".subckt c A Y VDD VSS\nMp Y A VDD VDD pfet w=2u l=0.15u\nMn Y A VSS VSS nfet w=1u l=0.15u\n.ends\n";
         let r = compare(&nl(lay), &nl(sch));
-        assert!(!r.matched, "short by one finger -> total width differs -> MISMATCH");
+        assert!(
+            !r.matched,
+            "short by one finger -> total width differs -> MISMATCH"
+        );
         assert!(r.property_diffs.iter().any(|d| d.param == "w"));
     }
 
@@ -1117,7 +1204,12 @@ mod tests {
         let lay = ".subckt inv A Y VDD VSS\nMp Y A VDD VDD pfet w=1u l=0.15u\nMn Y A VSS VSS nfet w=1u l=0.15u\n.ends\n";
         let r = compare(&nl(lay), &nl(sch));
         assert!(!r.matched, "a wrong transistor width must MISMATCH");
-        assert_eq!(r.property_diffs.len(), 1, "exactly the pull-up width differs: {:?}", r.property_diffs);
+        assert_eq!(
+            r.property_diffs.len(),
+            1,
+            "exactly the pull-up width differs: {:?}",
+            r.property_diffs
+        );
         let d = &r.property_diffs[0];
         assert_eq!((d.kind, d.param.as_str()), ('M', "w"));
         assert!((d.a_value - 1e-6).abs() < 1e-15 && (d.b_value - 2e-6).abs() < 1e-15);
@@ -1129,7 +1221,10 @@ mod tests {
         let sch = ".subckt inv A Y VDD VSS\nMp Y A VDD VDD pfet w=2.00u l=0.15u\nMn Y A VSS VSS nfet w=1u l=0.15u\n.ends\n";
         let lay = ".subckt inv A Y VDD VSS\nMp Y A VDD VDD pfet w=2.01u l=0.15u\nMn Y A VSS VSS nfet w=1u l=0.15u\n.ends\n";
         let r = compare(&nl(lay), &nl(sch));
-        assert!(r.matched && r.verified, "within-tolerance widths should verify: {r:?}");
+        assert!(
+            r.matched && r.verified,
+            "within-tolerance widths should verify: {r:?}"
+        );
         assert!(r.property_diffs.is_empty());
     }
 
@@ -1141,7 +1236,10 @@ mod tests {
         let lay = "R1 a b 1k\nR2 b c 5k\n"; // R2 wrong value
         let r = compare(&nl(lay), &nl(sch));
         assert!(!r.matched, "wrong resistor value must MISMATCH");
-        assert!(r.property_diffs.iter().any(|d| d.param == "value" && (d.a_value - 6e3).abs() < 1.0));
+        assert!(r
+            .property_diffs
+            .iter()
+            .any(|d| d.param == "value" && (d.a_value - 6e3).abs() < 1.0));
     }
 
     #[test]
@@ -1178,7 +1276,10 @@ Xi2 A Y VDD VSS inv
 ";
         let g = Netlist::parse(good, Some("buf")).unwrap();
         let b = Netlist::parse(bad, Some("buf")).unwrap();
-        assert!(!compare(&g, &b).matched, "miswired internal net must MISMATCH at transistor level");
+        assert!(
+            !compare(&g, &b).matched,
+            "miswired internal net must MISMATCH at transistor level"
+        );
     }
 
     #[test]
@@ -1199,7 +1300,10 @@ M1 Y A VGND VNB sky130_fd_pr__nfet_01v8 w=0.65 l=0.15
             &Netlist::parse(layout, Some("inv")).unwrap(),
             &Netlist::parse(schem, Some("inv")).unwrap(),
         );
-        assert!(r.matched && r.verified, "X-device layout must match M-device schematic: {r:?}");
+        assert!(
+            r.matched && r.verified,
+            "X-device layout must match M-device schematic: {r:?}"
+        );
         assert_eq!((r.a_devices, r.b_devices), (2, 2));
     }
 }

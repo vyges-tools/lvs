@@ -36,7 +36,10 @@ impl LvsJob {
         if p.is_absolute() || self.base_dir.is_empty() {
             rel.to_string()
         } else {
-            Path::new(&self.base_dir).join(rel).to_string_lossy().into_owned()
+            Path::new(&self.base_dir)
+                .join(rel)
+                .to_string_lossy()
+                .into_owned()
         }
     }
 
@@ -52,11 +55,17 @@ impl LvsJob {
                 .ok_or_else(|| JobError(format!("expected 'key: value', got {line:?}")))?;
             kv.insert(k.trim().to_lowercase(), v.trim().to_string());
         }
-        let get = |k: &str| kv.get(k).cloned().ok_or_else(|| JobError(format!("missing key: {k}")));
+        let get = |k: &str| {
+            kv.get(k)
+                .cloned()
+                .ok_or_else(|| JobError(format!("missing key: {k}")))
+        };
         let layout = kv.get("layout").filter(|s| !s.is_empty()).cloned();
         let layout_gds = kv.get("layout_gds").filter(|s| !s.is_empty()).cloned();
         if layout.is_none() && layout_gds.is_none() {
-            return Err(JobError("need `layout` (SPICE) or `layout_gds` + `rules`".into()));
+            return Err(JobError(
+                "need `layout` (SPICE) or `layout_gds` + `rules`".into(),
+            ));
         }
         Ok(LvsJob {
             layout,
@@ -71,7 +80,10 @@ impl LvsJob {
 
     pub fn load(path: &str) -> Result<LvsJob, JobError> {
         let text = std::fs::read_to_string(path).map_err(|e| JobError(format!("{path}: {e}")))?;
-        let base = Path::new(path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        let base = Path::new(path)
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
         LvsJob::parse(&text, &base)
     }
 }

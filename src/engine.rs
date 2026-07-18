@@ -13,7 +13,10 @@ pub fn run_job(job: &LvsJob) -> Result<LvsResult, String> {
     // side A: a layout-extracted SPICE netlist, OR natively extracted from a GDS
     let a = match (&job.layout_gds, &job.layout) {
         (Some(gds), _) => {
-            let rpath = job.rules.as_deref().ok_or("`layout_gds` requires `rules`")?;
+            let rpath = job
+                .rules
+                .as_deref()
+                .ok_or("`layout_gds` requires `rules`")?;
             let rules = crate::extract::Rules::load(&job.resolve(rpath))?;
             crate::extract::extract_file(&job.resolve(gds), job.top.as_deref(), &rules)?
         }
@@ -33,7 +36,11 @@ pub fn demo() -> LvsResult {
 
 pub fn render_report(r: &LvsResult) -> String {
     let mut s = String::new();
-    let verdict = if r.matched { "MATCH ✓" } else { "MISMATCH ✗" };
+    let verdict = if r.matched {
+        "MATCH ✓"
+    } else {
+        "MISMATCH ✗"
+    };
     s.push_str(&format!("vyges-lvs — {verdict}\n"));
     s.push_str(&format!(
         "  devices   A {}  B {}\n  nets      A {}  B {}\n  refine    {} iteration(s)\n",
@@ -47,7 +54,9 @@ pub fn render_report(r: &LvsResult) -> String {
         ));
     }
     for (k, a, b) in &r.device_kind_diff {
-        s.push_str(&format!("  device count differs: '{k}'  layout {a}  schematic {b}\n"));
+        s.push_str(&format!(
+            "  device count differs: '{k}'  layout {a}  schematic {b}\n"
+        ));
     }
     if r.matched {
         if r.verified {
@@ -84,12 +93,23 @@ pub fn render_report(r: &LvsResult) -> String {
             u.what,
             u.a_count,
             u.b_count,
-            if u.a_examples.is_empty() { "—".into() } else { u.a_examples.join(", ") },
-            if u.b_examples.is_empty() { "—".into() } else { u.b_examples.join(", ") },
+            if u.a_examples.is_empty() {
+                "—".into()
+            } else {
+                u.a_examples.join(", ")
+            },
+            if u.b_examples.is_empty() {
+                "—".into()
+            } else {
+                u.b_examples.join(", ")
+            },
         ));
     }
     if r.unbalanced.len() > 12 {
-        s.push_str(&format!("    … {} more class(es)\n", r.unbalanced.len() - 12));
+        s.push_str(&format!(
+            "    … {} more class(es)\n",
+            r.unbalanced.len() - 12
+        ));
     }
     s
 }
@@ -116,23 +136,44 @@ pub fn report_json(r: &LvsResult) -> String {
     if let Some(n) = &r.note {
         s.push_str(&format!("  \"note\": {},\n", jstr(n)));
     }
-    s.push_str(&format!("  \"a_devices\": {}, \"b_devices\": {},\n", r.a_devices, r.b_devices));
-    s.push_str(&format!("  \"a_nets\": {}, \"b_nets\": {},\n", r.a_nets, r.b_nets));
+    s.push_str(&format!(
+        "  \"a_devices\": {}, \"b_devices\": {},\n",
+        r.a_devices, r.b_devices
+    ));
+    s.push_str(&format!(
+        "  \"a_nets\": {}, \"b_nets\": {},\n",
+        r.a_nets, r.b_nets
+    ));
     s.push_str(&format!("  \"iterations\": {},\n", r.iterations));
-    s.push_str(&format!("  \"only_in_a_ports\": [{}],\n", jlist(&r.only_in_a_ports)));
-    s.push_str(&format!("  \"only_in_b_ports\": [{}],\n", jlist(&r.only_in_b_ports)));
+    s.push_str(&format!(
+        "  \"only_in_a_ports\": [{}],\n",
+        jlist(&r.only_in_a_ports)
+    ));
+    s.push_str(&format!(
+        "  \"only_in_b_ports\": [{}],\n",
+        jlist(&r.only_in_b_ports)
+    ));
     s.push_str("  \"unbalanced\": [\n");
     for (k, u) in r.unbalanced.iter().enumerate() {
         let comma = if k + 1 < r.unbalanced.len() { "," } else { "" };
         s.push_str(&format!(
             "    {{\"what\": {}, \"a_count\": {}, \"b_count\": {}, \"a\": [{}], \"b\": [{}]}}{}\n",
-            jstr(u.what), u.a_count, u.b_count, jlist(&u.a_examples), jlist(&u.b_examples), comma
+            jstr(u.what),
+            u.a_count,
+            u.b_count,
+            jlist(&u.a_examples),
+            jlist(&u.b_examples),
+            comma
         ));
     }
     s.push_str("  ],\n");
     s.push_str("  \"property_diffs\": [\n");
     for (k, d) in r.property_diffs.iter().enumerate() {
-        let comma = if k + 1 < r.property_diffs.len() { "," } else { "" };
+        let comma = if k + 1 < r.property_diffs.len() {
+            ","
+        } else {
+            ""
+        };
         s.push_str(&format!(
             "    {{\"kind\": {}, \"a_device\": {}, \"b_device\": {}, \"param\": {}, \
              \"a_value\": {}, \"b_value\": {}}}{}\n",
@@ -191,8 +232,15 @@ mod tests {
     /// bounded search could not confirm is inconclusive, not a pass.
     #[test]
     fn lvs_met_is_tri_state() {
-        let mut r = LvsResult { matched: true, verified: true, ..Default::default() };
-        assert!(report_json(&r).contains("\"lvs_met\": true"), "proven MATCH -> true");
+        let mut r = LvsResult {
+            matched: true,
+            verified: true,
+            ..Default::default()
+        };
+        assert!(
+            report_json(&r).contains("\"lvs_met\": true"),
+            "proven MATCH -> true"
+        );
 
         r.verified = false;
         assert!(
@@ -201,6 +249,9 @@ mod tests {
         );
 
         r.matched = false;
-        assert!(report_json(&r).contains("\"lvs_met\": false"), "MISMATCH -> false");
+        assert!(
+            report_json(&r).contains("\"lvs_met\": false"),
+            "MISMATCH -> false"
+        );
     }
 }
