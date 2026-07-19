@@ -24,7 +24,7 @@ pub struct LvsJob {
     pub layout: Option<String>,     // layout-extracted SPICE netlist (side A)
     pub layout_gds: Option<String>, // OR a GDS to extract natively (needs `rules`)
     pub rules: Option<String>,      // extraction rules for `layout_gds`
-    pub pdk: Option<String>,        // OR a pdk-store name whose `extract_rules` supplies `rules`
+    pub pdk: Option<String>,        // OR a pdk-store name whose `lvs_device_rules` supplies `rules`
     pub schematic: String,
     pub top: Option<String>,
     pub base_dir: String,

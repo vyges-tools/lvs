@@ -30,7 +30,7 @@ colour-refinement); a mismatch reports the unmatched device/net classes.
 `extract` runs native device extraction (GDS/OASIS -> SPICE) on its own.
 
 Extraction rules come from `--rules`/`rules:` directly, or are resolved from a
-PDK by `--pdk`/`pdk:` NAME via the installed pdk-store (its `extract_rules`).
+PDK by `--pdk`/`pdk:` NAME via the installed pdk-store (its `lvs_device_rules`).
 
 flags:
   --pdk NAME           resolve extraction rules from pdk-store (vs --rules)
@@ -86,11 +86,25 @@ struct Cli {
     top: Option<String>,
 }
 
-/// Resolve a PDK collateral key (e.g. `extract_rules`) to a concrete path via the
+/// Resolve a PDK collateral key (e.g. `lvs_device_rules`) to a concrete path via the
 /// shared foundation resolver (the `pdk-store` adapter, with `$VYGES_PLUGIN`
 /// fallback + detailed errors). See `vyges_layout::pdk::resolve`.
 fn pdk_resolve(pdk: &str, key: &str) -> Result<String, String> {
     vyges_layout::pdk::resolve(pdk, key, None)
+}
+
+/// The device-recognition deck for `pdk`.
+///
+/// The key was renamed from `extract_rules` — a misnomer, since it reads as *parasitic*
+/// extraction and this is LVS device recognition. pdk-store aliases the old name, so asking
+/// for the new one is enough against a current pdk-store. The explicit fallback here covers
+/// the other skew: a current vyges-lvs run against an *older* pdk-store on PATH, which knows
+/// only the old key and would otherwise fail on a descriptor that is perfectly fine.
+fn pdk_device_rules(pdk: &str) -> Result<String, String> {
+    match pdk_resolve(pdk, "lvs_device_rules") {
+        Ok(p) => Ok(p),
+        Err(new_err) => pdk_resolve(pdk, "extract_rules").map_err(|_| new_err),
+    }
 }
 
 fn parse_cli(args: &[String]) -> Cli {
@@ -347,7 +361,7 @@ fn main() {
             let rules_path = if let Some(r) = &cli.rules {
                 r.clone()
             } else if let Some(p) = &cli.pdk {
-                match pdk_resolve(p, "extract_rules") {
+                match pdk_device_rules(p) {
                     Ok(path) => path,
                     Err(e) => {
                         eprintln!("error: {e}");
@@ -426,7 +440,7 @@ fn main() {
             // `pdk:` (or --pdk) via pdk-store — so a job can name a PDK, not a path.
             if job.rules.is_none() && job.layout_gds.is_some() {
                 if let Some(p) = job.pdk.clone().or_else(|| cli.pdk.clone()) {
-                    match pdk_resolve(&p, "extract_rules") {
+                    match pdk_device_rules(&p) {
                         Ok(path) => job.rules = Some(path),
                         Err(e) => {
                             eprintln!("error: {e}");
