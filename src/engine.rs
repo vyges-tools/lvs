@@ -24,7 +24,49 @@ pub fn run_job(job: &LvsJob) -> Result<LvsResult, String> {
         (None, None) => return Err("need `layout` or `layout_gds`".into()),
     };
     let b = load(&job.resolve(&job.schematic), job.top.as_deref())?;
-    Ok(compare::compare(&a, &b))
+    let r = compare::compare(&a, &b);
+    emit_input_coverage(&r);
+    Ok(r)
+}
+
+/// Report what each side actually contained.
+///
+/// LVS has the most dangerous silent failure of any of these engines, because its failure mode is
+/// a **pass**. An empty layout matches an empty schematic; so does a layout whose extraction
+/// found two devices out of thousands, if the schematic side degraded the same way. The verdict
+/// is then not wrong so much as vacuous, and it is reported as MATCH either way.
+///
+/// So the counts both sides were compared on are stated with the verdict rather than left in a
+/// report a reader may not open, and a comparison that cannot mean anything says so.
+fn emit_input_coverage(r: &compare::LvsResult) {
+    use vyges_events::{Event, Severity};
+    let empty = r.a_devices == 0 || r.b_devices == 0;
+    // A large asymmetry means one side is not what the other thinks it is, and a MATCH under
+    // those conditions deserves reading twice regardless of what the comparison concluded.
+    let lopsided = {
+        let (lo, hi) = (r.a_devices.min(r.b_devices), r.a_devices.max(r.b_devices));
+        hi > 0 && lo * 2 < hi
+    };
+    let msg = if empty {
+        format!(
+            "one side has no devices (layout {} / schematic {}) — a comparison against an empty \
+             netlist matches trivially and proves nothing",
+            r.a_devices, r.b_devices
+        )
+    } else if lopsided {
+        format!(
+            "device counts differ sharply: layout {} / schematic {} (nets {} / {}) — read the \
+             verdict with that in mind",
+            r.a_devices, r.b_devices, r.a_nets, r.b_nets
+        )
+    } else {
+        format!(
+            "compared layout {} device(s) / {} net(s) against schematic {} / {}",
+            r.a_devices, r.a_nets, r.b_devices, r.b_nets
+        )
+    };
+    let sev = if empty || lopsided { Severity::Warn } else { Severity::Info };
+    vyges_events::emit(&Event::new("vyges-lvs", sev, msg).with_code("LVS-COVERAGE"));
 }
 
 /// A built-in matching pair — `vyges-lvs demo`.
@@ -253,5 +295,58 @@ mod tests {
             report_json(&r).contains("\"lvs_met\": false"),
             "MISMATCH -> false"
         );
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    fn res(ad: usize, bd: usize) -> compare::LvsResult {
+        compare::LvsResult {
+            a_devices: ad,
+            b_devices: bd,
+            a_nets: ad,
+            b_nets: bd,
+            ..Default::default()
+        }
+    }
+
+    // The verdict text is what a reader acts on, so assert on it rather than on a severity flag.
+    fn message(r: &compare::LvsResult) -> String {
+        let empty = r.a_devices == 0 || r.b_devices == 0;
+        let (lo, hi) = (r.a_devices.min(r.b_devices), r.a_devices.max(r.b_devices));
+        let lopsided = hi > 0 && lo * 2 < hi;
+        if empty {
+            "empty".into()
+        } else if lopsided {
+            "lopsided".into()
+        } else {
+            "ok".into()
+        }
+    }
+
+    #[test]
+    fn an_empty_side_is_called_out_because_the_failure_mode_is_a_pass() {
+        // The reason this engine needed the event most: an empty layout matches an empty
+        // schematic, and the result is reported as MATCH. A verdict that cannot mean anything
+        // should not read like one that does.
+        assert_eq!(message(&res(0, 0)), "empty");
+        assert_eq!(message(&res(0, 500)), "empty");
+        assert_eq!(message(&res(500, 0)), "empty");
+    }
+
+    #[test]
+    fn a_sharp_asymmetry_is_flagged_without_pre_empting_the_verdict() {
+        // Not a failure by itself — hierarchy and device folding legitimately differ — but a
+        // MATCH across a 10x device gap deserves a second read.
+        assert_eq!(message(&res(10, 500)), "lopsided");
+        assert_eq!(message(&res(500, 10)), "lopsided");
+    }
+
+    #[test]
+    fn comparable_counts_are_reported_without_demanding_attention() {
+        assert_eq!(message(&res(500, 500)), "ok");
+        assert_eq!(message(&res(500, 400)), "ok", "ordinary variation is not a warning");
     }
 }
