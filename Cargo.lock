@@ -137,7 +137,7 @@ source = "git+https://github.com/vyges-tools/loom?branch=main#db85cb4768950cf62a
 
 [[package]]
 name = "vyges-lvs"
-version = "0.1.28"
+version = "0.1.29"
 dependencies = [
  "vyges-events",
  "vyges-layout",
