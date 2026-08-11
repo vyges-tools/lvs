@@ -15,13 +15,13 @@ use vyges_lvs::engine;
 use vyges_lvs::job::LvsJob;
 
 const USAGE: &str = "\
-vyges-lvs — layout-vs-schematic netlist comparison with clear divergence diagnostics
+vyges loom lvs — layout-vs-schematic netlist comparison with clear divergence diagnostics
 
 usage:
-  vyges-lvs run     JOB [-o OUT] [--json] [--fail-on-mismatch]
-  vyges-lvs extract GDS (--rules RULES | --pdk NAME) [--top CELL] [-o out.spice]
-  vyges-lvs check   JOB
-  vyges-lvs demo         [-o OUT] [--json]
+  vyges loom lvs run     JOB [-o OUT] [--json] [--fail-on-mismatch]
+  vyges loom lvs extract GDS (--rules RULES | --pdk NAME) [--top CELL] [-o out.spice]
+  vyges loom lvs check   JOB
+  vyges loom lvs demo         [-o OUT] [--json]
 
 A JOB is a small declarative `.lvs` file: the layout side as a SPICE netlist
 (`layout:`) OR a GDS to extract natively (`layout_gds:` + `rules:`/`pdk:`), plus
