@@ -50,7 +50,15 @@ const PROP_TOL: f64 = 0.01;
 fn sig_keys(kind: char) -> &'static [&'static str] {
     match kind {
         'M' => &["w", "l", "nf", "m"],
-        'R' | 'C' | 'L' => &["value"],
+        // A passive may be written as a plain value OR drawn as geometry, and a PDK
+        // netlist usually does the latter.
+        'R' | 'C' | 'L' => &["value", "w", "l", "m"],
+        // Subcircuit calls. Most PDK passives and devices reach us this way --
+        // `XR1 a b sub! rhigh w=1u l=20u` -- so leaving 'X' without significant keys
+        // means device SIZING is never compared and every parameter check passes
+        // vacuously: a netlist whose components have all been re-sized returns a
+        // verified MATCH.
+        'X' => &["w", "l", "nf", "m", "value"],
         _ => &[],
     }
 }
@@ -1152,6 +1160,39 @@ mod tests {
             "MATCH should be confirmed by an explicit bijection: {r:?}"
         );
         assert_eq!(r.a_devices, 2);
+    }
+
+    #[test]
+    fn resized_subckt_device_is_a_parameter_mismatch() {
+        // A PDK passive is a SUBCIRCUIT CALL sized by geometry, not a primitive with a
+        // `value`: `XRz a b sub! rhigh w=1u l=56.9u`. Those land on kind 'X'.
+        //
+        // This is not hypothetical: an RC network re-sized end to end returned MATCH
+        // with exit 0, because 'X' carried no significant keys and every parameter check
+        // passed vacuously. A connectivity gate that silently ignores device sizing will
+        // pass a netlist whose components are all wrong.
+        let a = ".subckt f i o\nXRz i o sub! rhigh w=1u l=35u\nXCz o 0 cap_mfringe w=93u l=93u\n.ends\n";
+        let b = ".subckt f i o\nXRz i o sub! rhigh w=1u l=56.9u\nXCz o 0 cap_mfringe w=63u l=63u\n.ends\n";
+        let r = compare(&nl(a), &nl(b));
+        assert!(
+            !r.property_diffs.is_empty(),
+            "a resized subcircuit device must be reported as a parameter difference: {r:?}"
+        );
+        assert!(
+            !r.matched || !r.verified,
+            "a netlist whose devices are all the wrong size must not pass as a verified MATCH: {r:?}"
+        );
+    }
+
+    #[test]
+    fn identically_sized_subckt_devices_still_match() {
+        // The guard must not fire on a legitimately identical pair, or it is just noise.
+        let a = ".subckt f i o\nXRz i o sub! rhigh w=1u l=35u\nXCz o 0 cap_mfringe w=93u l=93u\n.ends\n";
+        let r = compare(&nl(a), &nl(a));
+        assert!(
+            r.property_diffs.is_empty() && r.matched,
+            "identical netlists must still MATCH cleanly: {r:?}"
+        );
     }
 
     #[test]
