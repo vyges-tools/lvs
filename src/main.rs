@@ -14,6 +14,27 @@ use vyges_lvs::compare::LvsResult;
 use vyges_lvs::engine;
 use vyges_lvs::job::LvsJob;
 
+/// A diagnostic as a structured event (`LVS-ERROR`, or `LVS-WARNING` for a warning; `vyges-events/1.0`)
+/// instead of a bare stderr line; text after a blank line (the usage) stays plain help.
+fn diag_line(msg: String) {
+    let (head, help) = match msg.split_once("\n\n") {
+        Some((h, rest)) => (h.to_string(), Some(rest.to_string())),
+        None => (msg, None),
+    };
+    let warn = head.starts_with("warning: ");
+    let text = head.strip_prefix("error: ").or_else(|| head.strip_prefix("warning: ")).unwrap_or(&head).to_string();
+    let (severity, code) = if warn { (vyges_events::Severity::Warn, "LVS-WARNING") } else { (vyges_events::Severity::Error, "LVS-ERROR") };
+    vyges_events::emit(&vyges_events::Event::new("vyges-lvs", severity, text).with_code(code));
+    if let Some(h) = help {
+        eprintln!("{h}");
+    }
+}
+
+macro_rules! diag {
+    ($($t:tt)*) => { diag_line(format!($($t)*)) };
+}
+
+
 const USAGE: &str = "\
 vyges loom lvs — layout-vs-schematic netlist comparison with clear divergence diagnostics
 
@@ -181,7 +202,7 @@ fn write_out(text: &str, cli: &Cli) {
                 }
             }
             Err(e) => {
-                eprintln!("error: {path}: {e}");
+                diag!("error: {path}: {e}");
                 exit(1);
             }
         },
@@ -365,7 +386,7 @@ fn main() {
                 match pdk_device_rules(p) {
                     Ok(path) => path,
                     Err(e) => {
-                        eprintln!("error: {e}");
+                        diag!("error: {e}");
                         exit(2);
                     }
                 }
@@ -376,7 +397,7 @@ fn main() {
             let rules = match vyges_lvs::extract::Rules::load(&rules_path) {
                 Ok(r) => r,
                 Err(e) => {
-                    eprintln!("error: {e}");
+                    diag!("error: {e}");
                     exit(2);
                 }
             };
@@ -385,7 +406,7 @@ fn main() {
                     let spice = vyges_lvs::extract::to_spice(&nl);
                     match &cli.out {
                         Some(p) => std::fs::write(p, &spice).unwrap_or_else(|e| {
-                            eprintln!("error: {p}: {e}");
+                            diag!("error: {p}: {e}");
                             exit(1);
                         }),
                         None => print!("{spice}"),
@@ -399,7 +420,7 @@ fn main() {
                     }
                 }
                 Err(e) => {
-                    eprintln!("error: {e}");
+                    diag!("error: {e}");
                     exit(1);
                 }
             }
@@ -420,7 +441,7 @@ fn main() {
                     j.top.as_deref().unwrap_or("(top-level)")
                 ),
                 Err(e) => {
-                    eprintln!("error: {e}");
+                    diag!("error: {e}");
                     exit(2);
                 }
             }
@@ -433,7 +454,7 @@ fn main() {
             let mut job = match LvsJob::load(path) {
                 Ok(j) => j,
                 Err(e) => {
-                    eprintln!("error: {e}");
+                    diag!("error: {e}");
                     exit(2);
                 }
             };
@@ -444,7 +465,7 @@ fn main() {
                     match pdk_device_rules(&p) {
                         Ok(path) => job.rules = Some(path),
                         Err(e) => {
-                            eprintln!("error: {e}");
+                            diag!("error: {e}");
                             exit(2);
                         }
                     }
@@ -461,7 +482,7 @@ fn main() {
             match engine::run_job(&job) {
                 Ok(r) => emit(&r, &cli),
                 Err(e) => {
-                    eprintln!("error: {e}");
+                    diag!("error: {e}");
                     exit(1);
                 }
             }
