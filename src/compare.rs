@@ -630,11 +630,11 @@ fn verify_iso(
     // candidate B devices grouped by refined colour
     let mut b_by_colour: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
     let mut a_devs: Vec<usize> = Vec::new();
-    for i in 0..ndev {
+    for (i, &c) in dev_c.iter().enumerate() {
         if g.dev_side[i] == 0 {
             a_devs.push(i);
         } else {
-            b_by_colour.entry(dev_c[i]).or_default().push(i);
+            b_by_colour.entry(c).or_default().push(i);
         }
     }
     // match the most-constrained devices first (fewest candidates) to fail fast
@@ -653,11 +653,11 @@ fn verify_iso(
     {
         let mut a_of: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
         let mut b_of: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
-        for j in 0..nnet {
+        for (j, &c) in net_c.iter().enumerate() {
             if g.net_side[j] == 0 {
-                a_of.entry(net_c[j]).or_default().push(j);
+                a_of.entry(c).or_default().push(j);
             } else {
-                b_of.entry(net_c[j]).or_default().push(j);
+                b_of.entry(c).or_default().push(j);
             }
         }
         for (col, av) in &a_of {
