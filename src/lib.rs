@@ -22,6 +22,10 @@
 // The SPICE netlist reader now lives in the shared vyges-loom foundation (next to the
 // gate-level readers), re-exported so `crate::spice::{Device, Netlist, flatten}` keeps
 // resolving across the engine.
+
+// The crate's own name inside it: the command-line entry ([`cli_main`]) is built into the
+// library too, and its `vyges_lvs::…` paths resolve here.
+extern crate self as vyges_lvs;
 pub use vyges_loom::spice;
 pub mod compare;
 pub mod engine;
@@ -34,3 +38,10 @@ pub mod extract; // native device extraction (GDS -> netlist)
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const COPYRIGHT: &str = "© 2026 Vyges. All Rights Reserved.  https://vyges.com";
+
+/// The `vyges-lvs` command-line entry (the binary's `main`), built into the library too so a
+/// suite binary can link every engine and run the one it is invoked as.
+#[cfg(feature = "suite")]
+#[doc(hidden)]
+#[path = "main.rs"]
+pub mod cli_main;
