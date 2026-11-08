@@ -145,6 +145,10 @@ The extractor handles **hierarchy** (SREF/AREF flattened first), **metal-to-meta
 only where it is *enclosed* by a shape on each). Same-layer connectivity is **true geometric
 overlap** (shapes tiled into rects, not bounding boxes).
 
+A multi-patterned metal drawn on one GDS datatype per mask stays **one conductor**: the rule
+`alias: <mask L/D> <plain L/D>` reads that datatype as the layer's plain one before extraction
+(one line per mask datatype), so shapes of different masks that touch are one net.
+
 **Honest bounds (depth reserved).** The comparator flattens hierarchy, anchors supply nets
 so a local fault no longer cascades into thousands of spurious classes, and confirms a
 balanced match by constructing an explicit bijection (refuting 1-WL false positives); the
