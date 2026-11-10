@@ -1,7 +1,5 @@
 # vyges-lvs
 
-**[Download Loom](https://vyges.com/products/vyges-cli/#install)** · install the free [Vyges CLI](https://vyges.com/products/vyges-cli/), then `vyges install loom`
-
 **Layout-vs-schematic** netlist comparison: two SPICE netlists in — a
 layout-extracted one and the schematic/reference — a **MATCH / MISMATCH verdict
 with clear divergence diagnostics** out.
